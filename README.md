@@ -49,6 +49,28 @@ GET http://localhost:8080/api/axedu/v1/dev/token?userId=usr_t1
 호출해 보기: **Dev** 그룹 `GET /dev/token` 에 `usr_t1`(교사)·`usr_p1`(학부모) 등을 넣고 실행 → 받은 `accessToken` 을 오른쪽 위 **Authorize** 에 붙여 넣기.
 문서 설정은 `config/OpenApiConfig.java`, `prod` 프로필에서는 기본으로 꺼져 있습니다 (`AXEDU_SWAGGER_ENABLED=true` 로 켬).
 
+## 시연용 데모 계정 (배포 서버)
+
+배포 서버에는 로그인 API·`/dev/token` 이 없습니다. 시연할 때는 데모 계정의 **고정 토큰**을 프론트 '보는 사람' 선택에서 바꿔 끼웁니다.
+
+| 계정 | userId | 프론트(Vercel) 환경 변수 |
+| --- | --- | --- |
+| 김수학 교사 (3학년 9반 담임) | `usr_t1` | `VITE_DEMO_TOKEN_USR_T1` |
+| 김리현 학부모 (자녀 김리현) | `usr_p1` | `VITE_DEMO_TOKEN_USR_P1` |
+| 김민수 학부모 (자녀 김민수) | `usr_p2` | `VITE_DEMO_TOKEN_USR_P2` |
+
+1. 백엔드(Railway)에 `AXEDU_DEMO_ENABLED=true` → 빈 DB 에 데모 사용자·방·민원이 한 번 들어갑니다 (`/dev/token` 은 여전히 꺼져 있음).
+2. 토큰 만들기 — 배포 서버와 **같은 `AXEDU_JWT_SECRET`** 으로:
+   ```bash
+   AXEDU_JWT_SECRET=<Railway 와 같은 값> ./gradlew demoTokens
+   ```
+   서버 시작 로그에도 같은 토큰이 찍힙니다. 발급·만료 시각이 고정이라 **서명 키가 같으면 언제 만들어도, 다시 배포해도 같은 토큰**입니다.
+3. 출력된 `VITE_DEMO_TOKEN_*=...` 3줄을 Vercel 환경 변수에 넣고 프론트를 다시 빌드합니다.
+
+- 만료: `AXEDU_DEMO_TOKEN_EXPIRES_AT` (기본 `2026-12-31T23:59:59+09:00`). 시연이 끝나면 지나도록 두세요. 바꾸면 토큰도 바뀝니다.
+- `AXEDU_JWT_SECRET` 을 바꾸면 기존 토큰은 모두 무효가 됩니다 (다시 만들어 Vercel 에 넣기).
+- `VITE_` 변수는 프론트 번들에 그대로 들어가 **누구나 볼 수 있습니다.** 데모 계정 3개만 쓸 수 있고 만료가 있지만, 실제 학생·학부모 데이터가 있는 서버에서는 켜지 마세요.
+
 ## 똑똑 AI 상담사 (프론트 PR #4·#5)
 
 학부모는 선생님 방이 아니라 **민원하기** 첫 화면에서 AI 상담사와 여러 번 대화하고, 상담에서 정한 선생님에게 요약 카드를 보냅니다.
