@@ -34,11 +34,19 @@ import com.axedu.dto.complaint.SummaryCardResponse;
 import com.axedu.service.ComplaintService;
 import com.axedu.service.SummaryCardService;
 
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 
 /**
  * 민원 (계약서 4장). 상태 변경 API 는 모두 전체 Complaint, 카드 API 는 카드 자체, 도움 요청은 전체 Escalation 을 data 로.
+ *
+ * <p>상태 흐름: EXPLAINED → (CLOSED_BY_EXPLANATION | CARD_DRAFTING → SUBMITTED → TEACHER_REVIEWING → IN_CONVERSATION)
+ * → (ESCALATED) → RESOLVED
  */
 @RestController
 @RequestMapping(WebConfig.API_BASE + "/complaints")
@@ -47,95 +55,171 @@ public class ComplaintController {
 
     private static final String IDEMPOTENCY = "Idempotency-Key";
 
+    private static final String TAG_PARENT = "민원 - 학부모";
+    private static final String TAG_QUERY = "민원 - 조회";
+    private static final String TAG_TEACHER = "민원 - 교사·대응팀";
+
     private final ComplaintService complaintService;
     private final SummaryCardService summaryCardService;
 
     // ---------------- 학부모 ----------------
 
+    @Tag(name = TAG_PARENT, description = "학부모: 민원 작성 → AI 규정 설명 → 요약 카드 작성·수정 → 교사에게 보내기")
+    @Operation(summary = "민원 작성 (학부모)",
+            description = "민원 원문을 등록하고 AI 규정 설명을 받습니다. 성공하면 상태 `EXPLAINED`. "
+                    + "AI 실패 시 422 `AI_PROCESSING_FAILED` + `details.complaintId` → `/explanation/retry` 로 재시도. "
+                    + "로컬 스텁은 원문에 `[AI실패]` 를 넣으면 첫 시도 실패를 재현합니다.")
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "201", description = "생성됨 (EXPLAINED)")
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "422", description = "AI_PROCESSING_FAILED — details.complaintId",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
     @PostMapping
     public ResponseEntity<ApiResponse<ComplaintResponse>> create(@CurrentUser AuthUser user,
-                                                                 @RequestHeader(name = IDEMPOTENCY, required = false) String key,
+                                                                 @Parameter(description = "중복 제출 방지 키 (선택)") @RequestHeader(name = IDEMPOTENCY, required = false) String key,
                                                                  @RequestBody CreateComplaintRequest req) {
         return created(complaintService.create(user, req, key));
     }
 
+    @Tag(name = TAG_PARENT)
+    @Operation(summary = "AI 설명 재시도 (학부모)", description = "상태 `EXPLAINED` 에서 AI 규정 설명을 다시 요청합니다.")
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200", description = "성공")
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "422", description = "AI_PROCESSING_FAILED",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
     @PostMapping("/{id}/explanation/retry")
-    public ApiResponse<ComplaintResponse> retry(@CurrentUser AuthUser user, @PathVariable String id) {
+    public ApiResponse<ComplaintResponse> retry(@CurrentUser AuthUser user, @Parameter(description = "민원 ID") @PathVariable String id) {
         return ApiResponse.ok(complaintService.retryExplanation(user, id));
     }
 
+    @Tag(name = TAG_PARENT)
+    @Operation(summary = "설명으로 종료 (학부모)", description = "AI 설명으로 충분할 때 민원을 닫습니다. `EXPLAINED` → `CLOSED_BY_EXPLANATION`.")
     @PostMapping("/{id}/close")
-    public ApiResponse<ComplaintResponse> close(@CurrentUser AuthUser user, @PathVariable String id) {
+    public ApiResponse<ComplaintResponse> close(@CurrentUser AuthUser user, @Parameter(description = "민원 ID") @PathVariable String id) {
         return ApiResponse.ok(complaintService.close(user, id));
     }
 
+    @Tag(name = TAG_PARENT)
+    @Operation(summary = "요약 카드 생성 (학부모)", description = "AI 가 원문을 교사용 요약 카드로 정리합니다. `EXPLAINED` → `CARD_DRAFTING`.")
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "201", description = "카드 생성됨")
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "422", description = "AI_PROCESSING_FAILED",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
     @PostMapping("/{id}/summary-card")
-    public ResponseEntity<ApiResponse<SummaryCardResponse>> createCard(@CurrentUser AuthUser user, @PathVariable String id) {
+    public ResponseEntity<ApiResponse<SummaryCardResponse>> createCard(@CurrentUser AuthUser user,
+                                                                       @Parameter(description = "민원 ID") @PathVariable String id) {
         return created(summaryCardService.create(user, id));
     }
 
+    @Tag(name = TAG_PARENT)
+    @Operation(summary = "요약 카드 AI 수정 (학부모)",
+            description = "자연어 지시(`instruction`)로 카드를 고칩니다. `baseVersion` 이 최신이 아니면 409 + `details.latestVersion`.")
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200", description = "성공")
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409", description = "INVALID_COMPLAINT_STATUS — 상태 불가 또는 카드 버전 충돌",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
     @PostMapping("/{id}/summary-card/revisions")
-    public ApiResponse<SummaryCardResponse> revise(@CurrentUser AuthUser user, @PathVariable String id,
+    public ApiResponse<SummaryCardResponse> revise(@CurrentUser AuthUser user, @Parameter(description = "민원 ID") @PathVariable String id,
                                                    @RequestBody RevisionRequest req) {
         return ApiResponse.ok(summaryCardService.revise(user, id, req));
     }
 
+    @Tag(name = TAG_PARENT)
+    @Operation(summary = "요약 카드 직접 수정 (학부모)",
+            description = "보낸 키만 바꿉니다. 태그는 `basicInfo.tags` 로 보냅니다. `baseVersion` 이 최신이 아니면 409 + `details.latestVersion`.")
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200", description = "성공")
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409", description = "INVALID_COMPLAINT_STATUS — 상태 불가 또는 카드 버전 충돌",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
     @PatchMapping("/{id}/summary-card")
-    public ApiResponse<SummaryCardResponse> edit(@CurrentUser AuthUser user, @PathVariable String id,
+    public ApiResponse<SummaryCardResponse> edit(@CurrentUser AuthUser user, @Parameter(description = "민원 ID") @PathVariable String id,
                                                  @RequestBody EditCardRequest req) {
         return ApiResponse.ok(summaryCardService.edit(user, id, req));
     }
 
+    @Tag(name = TAG_PARENT)
+    @Operation(summary = "확인하고 보내기 (학부모)",
+            description = "확인한 카드 버전(`cardVersion`)으로 교사에게 보냅니다. `CARD_DRAFTING` → `SUBMITTED`. 이때부터 교사에게 보입니다.")
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200", description = "성공")
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409", description = "INVALID_COMPLAINT_STATUS — 상태 불가 또는 카드 버전 충돌",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
     @PostMapping("/{id}/submit")
-    public ApiResponse<ComplaintResponse> submit(@CurrentUser AuthUser user, @PathVariable String id,
-                                                 @RequestHeader(name = IDEMPOTENCY, required = false) String key,
+    public ApiResponse<ComplaintResponse> submit(@CurrentUser AuthUser user, @Parameter(description = "민원 ID") @PathVariable String id,
+                                                 @Parameter(description = "중복 제출 방지 키 (선택)") @RequestHeader(name = IDEMPOTENCY, required = false) String key,
                                                  @RequestBody SubmitRequest req) {
         return ApiResponse.ok(complaintService.submit(user, id, req, key));
     }
 
     // ---------------- 조회 ----------------
 
+    @Tag(name = TAG_QUERY, description = "민원 목록·상세 (역할별로 보이는 범위와 필드가 다름)")
+    @Operation(summary = "민원 목록",
+            description = "학부모는 내 민원, 교사는 제출된(SUBMITTED 이후) 내 반 민원을 봅니다. `meta.nextCursor` 로 다음 페이지.")
     @GetMapping
     public ApiResponse<List<ComplaintResponse>> list(@CurrentUser AuthUser user,
+                                                     @Parameter(description = "상태 필터 (쉼표로 여러 개)", example = "SUBMITTED,TEACHER_REVIEWING")
                                                      @RequestParam(required = false) String status,
-                                                     @RequestParam(required = false) String studentId,
-                                                     @RequestParam(required = false) String cursor,
-                                                     @RequestParam(required = false) Integer limit) {
+                                                     @Parameter(description = "학생 ID 필터", example = "usr_s1") @RequestParam(required = false) String studentId,
+                                                     @Parameter(description = "이전 응답의 meta.nextCursor") @RequestParam(required = false) String cursor,
+                                                     @Parameter(description = "페이지 크기 (기본 20, 최대 100)", example = "20") @RequestParam(required = false) Integer limit) {
         ComplaintService.ComplaintPage page = complaintService.list(user, status, studentId, cursor, limit);
         return ApiResponse.ok(page.items(), PageMeta.cursor(page.nextCursor()));
     }
 
+    @Tag(name = TAG_QUERY)
+    @Operation(summary = "민원 상세",
+            description = "교사에게는 `originalText`·`aiExplanation` 키를 빼고, 제출된 카드 버전을 보여 줍니다. 열람 기록이 남습니다.")
     @GetMapping("/{id}")
-    public ApiResponse<ComplaintResponse> get(@CurrentUser AuthUser user, @PathVariable String id, HttpServletRequest request) {
+    public ApiResponse<ComplaintResponse> get(@CurrentUser AuthUser user,
+                                              @Parameter(description = "민원 ID", example = "cmp_seed1") @PathVariable String id,
+                                              HttpServletRequest request) {
         return ApiResponse.ok(complaintService.get(user, id, request.getRemoteAddr()));
     }
 
     // ---------------- 교사 ----------------
 
+    @Tag(name = TAG_TEACHER, description = "교사: 열람 → 답변 초안 → 답변 / 민원대응팀 도움 요청 / 처리 종료")
+    @Operation(summary = "열람 처리 (교사)", description = "`SUBMITTED` → `TEACHER_REVIEWING`.")
     @PostMapping("/{id}/acknowledge")
-    public ApiResponse<ComplaintResponse> acknowledge(@CurrentUser AuthUser user, @PathVariable String id) {
+    public ApiResponse<ComplaintResponse> acknowledge(@CurrentUser AuthUser user,
+                                                      @Parameter(description = "민원 ID", example = "cmp_seed1") @PathVariable String id) {
         return ApiResponse.ok(complaintService.acknowledge(user, id));
     }
 
+    @Tag(name = TAG_TEACHER)
+    @Operation(summary = "답변 초안 생성 (교사)", description = "상황·사유·다음 조치를 주면 AI 가 학부모용 답변 초안을 씁니다. 상태는 바뀌지 않습니다.")
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200", description = "성공")
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "422", description = "AI_PROCESSING_FAILED",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
     @PostMapping("/{id}/reply-drafts")
-    public ApiResponse<ReplyDraftResponse> replyDraft(@CurrentUser AuthUser user, @PathVariable String id,
+    public ApiResponse<ReplyDraftResponse> replyDraft(@CurrentUser AuthUser user,
+                                                      @Parameter(description = "민원 ID", example = "cmp_seed1") @PathVariable String id,
                                                       @RequestBody ReplyDraftRequest req) {
         return ApiResponse.ok(complaintService.createReplyDraft(user, id, req));
     }
 
+    @Tag(name = TAG_TEACHER)
+    @Operation(summary = "답변 보내기 (교사)",
+            description = "답변을 채팅방에 보내고 연락 방법(`MESSAGE`/`CALL`/`VISIT`)을 기록합니다. `TEACHER_REVIEWING` → `IN_CONVERSATION`.")
     @PostMapping("/{id}/reply")
-    public ApiResponse<ReplyResultResponse> reply(@CurrentUser AuthUser user, @PathVariable String id, @RequestBody ReplyRequest req) {
+    public ApiResponse<ReplyResultResponse> reply(@CurrentUser AuthUser user,
+                                                  @Parameter(description = "민원 ID", example = "cmp_seed1") @PathVariable String id,
+                                                  @RequestBody ReplyRequest req) {
         return ApiResponse.ok(complaintService.reply(user, id, req));
     }
 
+    @Tag(name = TAG_TEACHER)
+    @Operation(summary = "민원대응팀 도움 요청 (교사)",
+            description = "`SUBMITTED`·`TEACHER_REVIEWING`·`IN_CONVERSATION` 에서 가능. → `ESCALATED`. 이미 요청했으면 409.")
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "201", description = "도움 요청 생성됨")
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409", description = "INVALID_COMPLAINT_STATUS — 상태 불가 또는 이미 요청함",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
     @PostMapping("/{id}/escalations")
-    public ResponseEntity<ApiResponse<EscalationResponse>> escalate(@CurrentUser AuthUser user, @PathVariable String id,
+    public ResponseEntity<ApiResponse<EscalationResponse>> escalate(@CurrentUser AuthUser user,
+                                                                    @Parameter(description = "민원 ID", example = "cmp_seed1") @PathVariable String id,
                                                                     @RequestBody EscalationRequest req) {
         return created(complaintService.escalate(user, id, req));
     }
 
+    @Tag(name = TAG_TEACHER)
+    @Operation(summary = "처리 종료 (교사·대응팀·관리자)", description = "`IN_CONVERSATION`·`ESCALATED` → `RESOLVED`. 도움 요청도 함께 종료됩니다.")
     @PostMapping("/{id}/resolve")
-    public ApiResponse<ComplaintResponse> resolve(@CurrentUser AuthUser user, @PathVariable String id) {
+    public ApiResponse<ComplaintResponse> resolve(@CurrentUser AuthUser user,
+                                                  @Parameter(description = "민원 ID", example = "cmp_seed1") @PathVariable String id) {
         return ApiResponse.ok(complaintService.resolve(user, id));
     }
 

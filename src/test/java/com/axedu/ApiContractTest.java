@@ -15,10 +15,10 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import com.axedu.common.security.JwtTokenProvider;
 
-/** 로컬 시드 데이터로 계약서의 응답 모양을 확인한다 */
+/** 로컬 시드 데이터로 계약서의 응답 모양을 확인한다 (H2 메모리 DB, application-test.yml) */
 @SpringBootTest
 @AutoConfigureMockMvc
-@ActiveProfiles("local")
+@ActiveProfiles({"local", "test"})
 class ApiContractTest {
 
     @Autowired
