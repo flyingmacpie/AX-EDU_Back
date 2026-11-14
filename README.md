@@ -49,6 +49,31 @@ GET http://localhost:8080/api/axedu/v1/dev/token?userId=usr_t1
 호출해 보기: **Dev** 그룹 `GET /dev/token` 에 `usr_t1`(교사)·`usr_p1`(학부모) 등을 넣고 실행 → 받은 `accessToken` 을 오른쪽 위 **Authorize** 에 붙여 넣기.
 문서 설정은 `config/OpenApiConfig.java`, `prod` 프로필에서는 기본으로 꺼져 있습니다 (`AXEDU_SWAGGER_ENABLED=true` 로 켬).
 
+## 민원 AI 1단계: 키워드 추출 (ChatGPT)
+
+```
+학부모 민원 → [AI 1단계: 키워드 추출] → 법령 조회 → (AI 2단계: 요약 카드 JSON, 예정) → 프론트
+```
+
+1. `.env` 에 OpenAI API 키를 넣습니다. 비워 두면 규칙 기반 대체 구현(`model: rule-based`)으로 동작합니다.
+   ```
+   OPENAI_API_KEY=sk-...
+   # AXEDU_OPENAI_MODEL=gpt-4.1-mini   (기본값, 바꿀 때만)
+   ```
+2. Swagger **AI** 그룹 `POST /api/axedu/v1/ai/keywords` 로 확인합니다. `searchLaws: true` 면 법령 조회까지 이어서 합니다.
+   ```json
+   { "text": "아이 폰을 수업시간에 봤다고 일주일째 안 돌려주신대요", "searchLaws": true }
+   ```
+   응답 `data`: `situationSummary` · `legalIssues`(쟁점) · `keywords`(`term` + 근거 `evidence`) · `searchKeywords` · `category` · `laws`
+
+- 코드: `service/ai/keyword/` (`KeywordExtractor` → `OpenAiKeywordExtractor` / `RuleBasedKeywordExtractor`), OpenAI 호출은 `service/ai/openai/OpenAiChatClient` (2단계에서도 재사용)
+- 프롬프트: `src/main/resources/prompts/keyword-extraction/` — 문구만 고치면 코드 수정 없이 반영
+  - `system.md` 역할·배경(검색 엔진 특성)·작업 순서·키워드 규칙·구어→법령 용어 변환 표·검색 자료 실제 용어·분류·보안 규칙
+  - `examples.json` few-shot 3개 (생활지도 / 학교폭력 / 평가 + 프롬프트 인젝션 문장이 섞인 예시)
+  - `schema.json` Structured Outputs 스키마 — 필드 순서(상황 → 쟁점 → 키워드 → 분류)대로 생각하게 함
+- 안전장치: 민원을 `<complaint>` 태그로 감싸 '자료'로만 취급, 전화번호·이메일·주민번호는 보내기 전에 가림, 결과 키워드는 일반어·개인정보·중복을 걸러 최대 6개
+- 실패 시 422 `AI_PROCESSING_FAILED` + `details.aiErrorCode` (`UNAUTHORIZED` 키 오류, `MODEL_NOT_FOUND`, `RATE_LIMITED`, `TIMEOUT`, `REFUSED` 등)
+
 ## 법령 조회 (AI_DATA, 키워드 기반)
 
 민원 처리 흐름 중 **키워드 → 법령 조회** 단계입니다.

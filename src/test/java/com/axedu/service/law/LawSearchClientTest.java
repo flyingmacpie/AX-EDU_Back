@@ -51,7 +51,7 @@ class LawSearchClientTest {
     }
 
     private static LawSearchClient client(String baseUrl) {
-        AppProperties props = new AppProperties(null, null, new AppProperties.LawSearch(baseUrl, 2000));
+        AppProperties props = new AppProperties(null, null, new AppProperties.LawSearch(baseUrl, 2000), null);
         return new LawSearchClient(RestClient.builder(), props);
     }
 

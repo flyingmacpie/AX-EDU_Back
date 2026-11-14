@@ -72,3 +72,10 @@ axedu:
   law-search:
     base-url: ${AXEDU_LAW_SEARCH_URL:http://127.0.0.1:8090}
     timeout-millis: 3000
+  # OpenAI(ChatGPT) — 민원 키워드 추출. 키가 비어 있으면 규칙 기반 대체 구현으로 동작
+  openai:
+    api-key: ${OPENAI_API_KEY:}
+    base-url: ${OPENAI_BASE_URL:https://api.openai.com/v1}
+    model: ${AXEDU_OPENAI_MODEL:gpt-4.1-mini}
+    timeout-millis: ${AXEDU_OPENAI_TIMEOUT_MILLIS:20000}
+    temperature: 0.2

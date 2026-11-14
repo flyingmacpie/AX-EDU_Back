@@ -10,9 +10,10 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @param cors     프론트 주소 (예: http://localhost:5173)
  * @param storage   파일 저장 위치·서명 URL 설정
  * @param lawSearch 법령 조회 파이썬 서버 (ai/law_search_server.py)
+ * @param openai    OpenAI(ChatGPT) API — 민원 키워드 추출 등
  */
 @ConfigurationProperties(prefix = "axedu")
-public record AppProperties(Cors cors, Storage storage, LawSearch lawSearch) {
+public record AppProperties(Cors cors, Storage storage, LawSearch lawSearch, OpenAi openai) {
 
     public record Cors(List<String> allowedOrigins) {
     }
@@ -31,5 +32,19 @@ public record AppProperties(Cors cors, Storage storage, LawSearch lawSearch) {
      * @param timeoutMillis 연결·응답 대기 시간
      */
     public record LawSearch(String baseUrl, int timeoutMillis) {
+    }
+
+    /**
+     * @param apiKey        OpenAI API 키 (.env 의 OPENAI_API_KEY). 비어 있으면 AI 대신 규칙 기반 대체 구현을 쓴다
+     * @param baseUrl       API 주소 (기본 https://api.openai.com/v1)
+     * @param model         모델 이름 (예: gpt-4.1-mini)
+     * @param timeoutMillis 응답 대기 시간
+     * @param temperature   낮을수록 같은 입력에 같은 결과. gpt-5·o 시리즈 모델에는 보내지 않는다
+     */
+    public record OpenAi(String apiKey, String baseUrl, String model, int timeoutMillis, Double temperature) {
+
+        public boolean enabled() {
+            return apiKey != null && !apiKey.isBlank();
+        }
     }
 }
