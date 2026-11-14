@@ -5,6 +5,9 @@ import java.time.OffsetDateTime;
 import com.axedu.entity.enums.AiRecommendation;
 import com.axedu.entity.enums.AiStatus;
 
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -58,6 +61,7 @@ public class ComplaintAiExplanation {
     @Column(name = "model_name", length = 50, nullable = false)
     private String modelName;
 
+    @JdbcTypeCode(SqlTypes.CHAR) // CHAR(64): SHA-256 hex
     @Column(name = "masked_input_hash", length = 64, nullable = false)
     private String maskedInputHash;
 

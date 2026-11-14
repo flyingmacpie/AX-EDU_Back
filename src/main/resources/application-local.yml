@@ -1,18 +1,4 @@
-# 로컬 개발: H2 메모리 DB(PostgreSQL 호환 모드) + 데모 시드 데이터 + /dev/token
-spring:
-  datasource:
-    url: jdbc:h2:mem:axedu;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH
-    username: sa
-    password:
-  h2:
-    console:
-      enabled: true
-      path: /h2-console
-  jpa:
-    hibernate:
-      ddl-auto: create
-    show-sql: false
-
+# 로컬 개발: PostgreSQL(.env) + 데모 시드 데이터(users 가 비어 있을 때 1회) + /dev/token
 logging:
   level:
     com.axedu: debug

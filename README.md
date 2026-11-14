@@ -5,14 +5,28 @@ AX-EDU 해커톤 BACKEND 소스코드 — 채팅·민원 API 서버 (Spring Boot
 프론트에서 `VITE_USE_MOCK=false` 로 바꾸고 `VITE_API_HOST=http://localhost:8080` 으로 두면 연동됩니다.
 
 - Java 21, Spring Boot 3.5, Spring Data JPA, Spring WebSocket, jjwt
-- DB: 로컬은 H2 메모리(PostgreSQL 호환 모드, 데모 시드 자동 입력), 운영은 PostgreSQL 15+ (`AXEDU DB스키마 설계서` 기준)
+- DB: PostgreSQL 15+ (`AXEDU DB 스키마 설계서 v1.1` 기준), 스키마는 Flyway 마이그레이션으로 관리. 테스트만 H2 메모리 DB
 - **AI 기능과 규정 API 는 차후 작성 예정** — 자리표시자로만 동작합니다 (아래 "차후 작성" 참고)
 
 ## 실행
 
+1. PostgreSQL 에 빈 데이터베이스를 하나 만듭니다.
+
 ```bash
-./gradlew bootRun            # 기본 프로필 local (H2 + 시드 데이터)
-./gradlew test               # 계약 형식 테스트
+createdb axedu
+```
+
+2. `.env.example` 을 `.env` 로 복사하고 DB 계정·비밀번호를 적습니다. (`.env` 는 git 에 올라가지 않습니다)
+
+```bash
+cp .env.example .env
+```
+
+3. 실행합니다. 처음 실행하면 Flyway 가 테이블 26개를 만들고, `local` 프로필이 데모 시드 데이터를 넣습니다 (`users` 가 비어 있을 때 1회).
+
+```bash
+./gradlew bootRun            # 기본 프로필 local (PostgreSQL + 시드 데이터 + /dev/token)
+./gradlew test               # 계약 형식 테스트 (H2 메모리 DB 사용, PostgreSQL 불필요)
 ```
 
 로컬에서 토큰 받기 (local 프로필 전용):
@@ -23,7 +37,7 @@ GET http://localhost:8080/api/axedu/v1/dev/token?userId=usr_t1
 
 받은 `accessToken` 을 브라우저 `localStorage['axedu.accessToken']` 에 넣으면 됩니다.
 시드 계정: `usr_t1`(교사 김수학, 3-9 담임) · `usr_t2`(교사 이영어) · `usr_p1`·`usr_p2`(학부모) · `usr_s1`~`usr_s6`(학생) · `usr_rt1`(민원대응팀) — 프론트 목 서버와 같은 사용자·방·메시지·제출된 민원(`cmp_seed1`)입니다.
-H2 콘솔: `http://localhost:8080/h2-console` (JDBC URL `jdbc:h2:mem:axedu`, 사용자 `sa`)
+시드 데이터를 처음부터 다시 넣으려면 DB 를 지우고 다시 만든 뒤 재실행하세요 (`dropdb axedu && createdb axedu`).
 
 ## API 문서 (Swagger)
 
@@ -35,18 +49,36 @@ H2 콘솔: `http://localhost:8080/h2-console` (JDBC URL `jdbc:h2:mem:axedu`, 사
 호출해 보기: **Dev** 그룹 `GET /dev/token` 에 `usr_t1`(교사)·`usr_p1`(학부모) 등을 넣고 실행 → 받은 `accessToken` 을 오른쪽 위 **Authorize** 에 붙여 넣기.
 문서 설정은 `config/OpenApiConfig.java`, `prod` 프로필에서는 기본으로 꺼져 있습니다 (`AXEDU_SWAGGER_ENABLED=true` 로 켬).
 
+## DB 스키마 (Flyway)
+
+- 스키마 정의: `src/main/resources/db/migration/V1__init.sql` (설계서의 enum 21종·테이블 26개·인덱스·`updated_at` 트리거·`v_complaints_teacher` 뷰)
+- 앱이 시작할 때 Flyway 가 아직 적용 안 된 버전을 순서대로 실행하고, 적용 이력은 `flyway_schema_history` 테이블에 남깁니다.
+- Hibernate 는 테이블을 만들지 않고 `ddl-auto: validate` 로 **엔티티와 DB 가 맞는지 검사만** 합니다. 안 맞으면 서버가 뜨지 않고 어느 컬럼이 다른지 알려 줍니다.
+
+스키마를 바꿀 때 (컬럼 추가 등):
+
+1. **이미 적용된 파일(V1 등)은 절대 고치지 않습니다.** 고치면 체크섬이 달라져 서버가 뜨지 않습니다.
+2. 다음 번호로 새 파일을 만듭니다. 예: `V2__add_messages_deliver_at.sql`
+   ```sql
+   ALTER TABLE messages ADD COLUMN deliver_at TIMESTAMPTZ(3);
+   ```
+   enum 값 추가는 `ALTER TYPE message_type ADD VALUE 'POLL';` (값 삭제·이름 변경은 하지 않음)
+3. 엔티티(`entity/`)에 같은 필드를 추가하고 서버를 재시작합니다.
+
+빈 DB 가 아닌 곳(이미 다른 테이블이 있는 스키마)에 처음 연결하면 Flyway 가 시작을 거부합니다. AXEDU 전용 빈 DB 를 쓰세요.
+
 운영(PostgreSQL):
 
 ```bash
 SPRING_PROFILES_ACTIVE=prod \
-AXEDU_DB_URL='jdbc:postgresql://host:5432/axedu?stringtype=unspecified' AXEDU_DB_USER=... AXEDU_DB_PASSWORD=... \
+AXEDU_DB_HOST=... AXEDU_DB_NAME=axedu AXEDU_DB_USER=... AXEDU_DB_PASSWORD=... \
 AXEDU_JWT_SECRET=... AXEDU_CRYPTO_KEY=<Base64 32바이트> AXEDU_FILE_SIGN_KEY=... \
 AXEDU_FRONT_ORIGIN=https://front.example.com AXEDU_PUBLIC_BASE_URL=https://api.example.com \
 java -jar build/libs/axedu-backend-0.1.0.jar
 ```
 
-`prod` 는 테이블을 만들지 않습니다(`ddl-auto: none`). 스키마는 DB 설계서의 DDL 로 먼저 만들어 두세요.
-`stringtype=unspecified` 는 enum·enum[] 컬럼(`user_role`, `day_of_week[]` 등)에 문자열을 그대로 넣기 위해 필요합니다.
+`prod` 도 시작 시 Flyway 로 마이그레이션합니다. 시드 데이터와 `/dev/token` 은 `local` 프로필에서만 켜집니다.
+`AXEDU_DB_URL` 로 URL 을 직접 줄 때는 `?stringtype=unspecified` 를 꼭 붙이세요. enum·enum[] 컬럼(`user_role`, `day_of_week[]` 등)에 문자열을 그대로 넣기 위해 필요합니다. (HOST/PORT/NAME 으로 주면 자동으로 붙습니다)
 
 ## 구조 (MVC)
 
@@ -94,4 +126,4 @@ com.axedu
 
 - **AI** (`service/ai/AiClient`): 규정 설명, 요약 카드 생성·수정, 감정 표현 순화 제안, 답변 초안. 지금은 `StubAiClient` 가 규칙 기반 자리표시 결과를 줍니다(원문에 `[AI실패]` 를 넣으면 첫 시도 실패 재현). 실제 구현체를 `@Primary` 빈으로 등록하면 서비스 코드는 그대로 동작합니다. 가명처리(`ComplaintService.maskedText`)도 보강 필요.
 - **규정 API** (`RegulationService.search`, `POST·DELETE /regulations`): 지금은 빈 목록. 인용 조항을 응답 모양으로 바꾸는 부분(`toResponses`)은 구현됨.
-- 그 밖: 슈퍼스쿨 안심전화·면담 예약 연동(`ReservationClient`), 푸시 알림(`notifications`), 오브젝트 스토리지·썸네일, TEMP 파일·멱등 키 정리 배치, 다중 서버용 WebSocket 브로커(Redis 등), RLS 용 `SET LOCAL app.school_id`, 이관 관리 API(`/escalations…`).
+- 그 밖: 슈퍼스쿨 안심전화·면담 예약 연동(`ReservationClient`), 푸시 알림(`notifications`), 오브젝트 스토리지·썸네일, TEMP 파일·멱등 키 정리 배치, 다중 서버용 WebSocket 브로커(Redis 등), RLS 정책(별도 Flyway 마이그레이션) + 요청마다 `SET LOCAL app.school_id`, 이관 관리 API(`/escalations…`).

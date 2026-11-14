@@ -5,6 +5,9 @@ import java.time.OffsetDateTime;
 import com.axedu.entity.enums.UserRole;
 import com.axedu.entity.enums.UserStatus;
 
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -51,6 +54,7 @@ public class User {
     @Column(name = "class_no")
     private Short classNo;
 
+    @JdbcTypeCode(SqlTypes.CHAR) // CHAR(5): 학번 5자리
     @Column(name = "student_number", length = 5)
     private String studentNumber;
 
