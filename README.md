@@ -49,6 +49,34 @@ GET http://localhost:8080/api/axedu/v1/dev/token?userId=usr_t1
 호출해 보기: **Dev** 그룹 `GET /dev/token` 에 `usr_t1`(교사)·`usr_p1`(학부모) 등을 넣고 실행 → 받은 `accessToken` 을 오른쪽 위 **Authorize** 에 붙여 넣기.
 문서 설정은 `config/OpenApiConfig.java`, `prod` 프로필에서는 기본으로 꺼져 있습니다 (`AXEDU_SWAGGER_ENABLED=true` 로 켬).
 
+## 똑똑 AI 상담사 (프론트 PR #4·#5)
+
+학부모는 선생님 방이 아니라 **민원하기** 첫 화면에서 AI 상담사와 여러 번 대화하고, 상담에서 정한 선생님에게 요약 카드를 보냅니다.
+
+```
+POST /complaints (사전 분류 category 선택)
+  → 첫 반응: 공감 + (안전·건강 표현이면 '서둘러 살펴야') + 대응 시급도 질문            consultStage = FACTS
+POST /complaints/{id}/consultations  (학부모 답 한 번 → 상담사의 다음 말)
+  FACTS    대응 시급도 → 일시 → 장소 → 자세한 이야기 → 아이 상태 → 바라는 점 (이미 말한 칸은 건너뜀)
+  EXPLAIN  사실관계 정리표 + 규정·법령 설명 (AI 1단계 키워드 → 법령 조회 → ChatGPT 설명, aiExplanation 에도 저장)
+  RECIPIENT 연락할 선생님 추천 근거 + 선생님 빠른 답 (value = teacherId)
+  CONTACT  연락 방법 → 시간대
+  READY    최종 정리표 + '요약 카드 만들기'
+POST /complaints/{id}/summary-card   (READY 일 때만, 아니면 409 + details.stage)
+  → AI 2단계: 상담 전체 + 규정 → 카드 JSON (urgency, 교사용 parentEmotion)        CARD_DRAFTING, consultStage = null
+GET  /complaints/{id}/recipients → POST /submit {teacherId}  (DIRECT 방 찾기/생성)
+```
+
+- **역할 분담**: 단계 진행·슬롯·빠른 답은 서버 규칙(`service/consult/ConsultEngine`, 프론트 목 `mockConsult.ts` 와 같은 흐름)이 정해 화면이 안정적이고,
+  학부모가 **직접 쓴 말의 해석·공감 문장·규정 설명·카드 작성**은 ChatGPT 가 맡습니다. `OPENAI_API_KEY` 가 없거나 AI 호출이 실패하면 같은 자리를 규칙이 채워 상담이 멈추지 않습니다.
+- **프롬프트** (`src/main/resources/prompts/`): `consult-turn`(자유 입력 해석 + 공감) · `consult-explain`(자료 목록 안에서만 인용, 판정 금지) · `consult-card`(교사용 카드 + 감정 상태). 모두 strict JSON 스키마.
+- **대응 시급도** `urgency`: 학부모·교사 모두. 상담에서 고른 값, 말로 수정('긴급으로 바꿔 주세요')으로만 변경, PATCH 로는 못 바꿈.
+- **학부모 감정 상태** `parentEmotion`: **교사·민원대응팀에게만**(학부모 응답에서는 키 없음). 신호 라벨만 담고 원문은 넣지 않으며, 책임 추궁·외부 신고 문장은 카드 본문에서 뺍니다. 규칙 판단을 바닥으로 AI 판단을 더합니다.
+- **개인정보**: 상담 상태·대화는 원문처럼 AES-256-GCM 암호화(`complaint_consult_states.state_enc`, `complaint_consult_messages.body_enc`), 교사 응답에서 제외. AI 에는 이름·학번·연락처를 가린 문장만 보냅니다.
+- **근거 자료**: 학교 규정(학칙·가정통신문) + AI_DATA 법령 조회 결과. 인용한 법령 조항은 `regulations`(school_id NULL = 전국 공통)·`regulation_chunks` 에 등록됩니다. 법령 조회 서버가 꺼져 있으면 학교 규정만으로 설명합니다.
+- DB: `V3__consultation_urgency_emotion.sql` (상담 테이블 2개, 카드 `urgency_level`·`urgency_reason`·`parent_emotion`)
+- 로컬 테스트: 민원 원문에 `[AI실패]` 를 넣으면 첫 응답이 한 번 실패(422)하고 `explanation/retry` 로 이어집니다.
+
 ## 민원 AI 1단계: 키워드 추출 (ChatGPT)
 
 ```
@@ -158,7 +186,7 @@ com.axedu
 | --- | --- |
 | 채팅 | `GET /chat/rooms` · `GET /chat/contacts` · `POST /chat/rooms` · `GET /chat/rooms/{id}` · `PATCH /chat/rooms/{id}/settings` · `DELETE /chat/rooms/{id}/members/me` · `GET·POST /chat/rooms/{id}/messages` · `POST /chat/rooms/{id}/read` · `GET·PUT /me/chat-settings` |
 | 파일 | `POST /files` (multipart `file`) · `GET /files/{id}/content?expires&sig` (서명 URL) |
-| 민원 | `POST /complaints` (`roomId` 선택) · `/explanation/retry` · `/close` · `POST /summary-card` · `/summary-card/revisions` · `PATCH /summary-card` · `GET /complaints/{id}/recipients` (**추가**) · `/submit` (`teacherId`) · `GET /complaints` · `GET /complaints/{id}` · `/acknowledge` · `/reply-drafts` · `/reply` · `/escalations` · `/resolve` |
+| 민원 | `POST /complaints` (`roomId` 선택) · `/explanation/retry` · `/close` · `POST /summary-card` · `/summary-card/revisions` · `PATCH /summary-card` · `POST /complaints/{id}/consultations` (**AI 상담**) · `GET /complaints/{id}/recipients` (**추가**) · `/submit` (`teacherId`) · `GET /complaints` · `GET /complaints/{id}` · `/acknowledge` · `/reply-drafts` · `/reply` · `/escalations` · `/resolve` |
 | 사용자 | `GET /me` (**추가**) |
 | 규정 | `GET /regulations` (스텁, 빈 목록) |
 | WebSocket | `ws://{host}/ws/axedu/v1?token=` — ping/pong + `message.created` `message.read` `room.created` `room.updated` `room.unread_changed` `complaint.status_changed` `complaint.card_updated` `escalation.created` `escalation.updated` |
@@ -177,7 +205,7 @@ com.axedu
 - `GET /complaints/{id}/recipients`: 학생의 이번 학년도 담임 + 교과 교사, `label` 예 "3학년 9반 담임 · 수학" / "3학년 영어". 추천(`recommended`)은 지금은 담임이고, AI 상담이 들어오면 상담에서 정한 선생님으로 바뀝니다.
 - `POST /complaints/{id}/submit` 의 `teacherId`: 후보가 아니거나 방의 선생님과 다르면 400 `details.fields.teacherId`. 학부모–선생님 DIRECT 방을 찾고 없으면 만든 뒤(`room.created`) 카드를 올립니다.
 - DB `V2__complaint_room_teacher_nullable.sql`: `complaints.room_id`·`teacher_id` NULL 허용 + 제출 이후 상태에서는 둘 다 필수(CHECK).
-- **아직 안 한 것 (AI 상담)**: `POST /complaints/{id}/consultations`, `consultStage`·`consultation`·`proposedTeacher` 응답 필드, 상담 테이블, `summary-card` 의 `READY` 전제, `explanation/retry` 의미 확장.
+- AI 상담은 아래 「똑똑 AI 상담사」 참고.
 
 ## 계약서에 없던 것 / 프론트 쪽 확인 필요
 

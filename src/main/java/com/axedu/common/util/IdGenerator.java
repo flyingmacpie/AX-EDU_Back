@@ -17,6 +17,7 @@ public final class IdGenerator {
     public static final String REG_CHUNK = "reg_";
     public static final String SAFE_CALL = "sc_";
     public static final String VISIT = "vs_";
+    public static final String CONSULT_MESSAGE = "cm_";
 
     private static final char[] ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ".toCharArray();
     private static final SecureRandom RANDOM = new SecureRandom();

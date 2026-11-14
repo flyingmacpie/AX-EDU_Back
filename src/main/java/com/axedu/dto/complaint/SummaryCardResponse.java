@@ -6,6 +6,7 @@ import java.util.List;
 import com.axedu.dto.chat.TimeRange;
 import com.axedu.dto.regulation.RegulationResponse;
 import com.axedu.entity.value.CardSuggestion;
+import com.axedu.entity.value.ParentEmotion;
 import com.axedu.entity.value.SituationItem;
 import com.fasterxml.jackson.annotation.JsonInclude;
 
@@ -22,6 +23,9 @@ public record SummaryCardResponse(
         List<String> requests,
         PreferredContact preferredContact,
         List<RegulationResponse> regulations,
+        CardUrgency urgency,
+        /** 학부모 감정 상태 — 교사·민원대응팀에게만. 학부모 응답에서는 키 자체를 뺀다 (null → 생략) */
+        @JsonInclude(JsonInclude.Include.NON_NULL) ParentEmotion parentEmotion,
         OffsetDateTime confirmedByParentAt,
         @JsonInclude(JsonInclude.Include.NON_EMPTY) List<CardSuggestion> suggestions) {
 
@@ -33,6 +37,6 @@ public record SummaryCardResponse(
 
     public SummaryCardResponse withoutSuggestions() {
         return new SummaryCardResponse(version, basicInfo, attribution, situation, concerns, requests, preferredContact,
-                regulations, confirmedByParentAt, null);
+                regulations, urgency, parentEmotion, confirmedByParentAt, null);
     }
 }

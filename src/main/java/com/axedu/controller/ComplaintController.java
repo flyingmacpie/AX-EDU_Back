@@ -21,6 +21,7 @@ import com.axedu.common.security.CurrentUser;
 import com.axedu.config.WebConfig;
 import com.axedu.dto.complaint.ComplaintRecipientResponse;
 import com.axedu.dto.complaint.ComplaintResponse;
+import com.axedu.dto.complaint.ConsultRequest;
 import com.axedu.dto.complaint.CreateComplaintRequest;
 import com.axedu.dto.complaint.EditCardRequest;
 import com.axedu.dto.complaint.EscalationRequest;
@@ -82,13 +83,33 @@ public class ComplaintController {
     }
 
     @Tag(name = TAG_PARENT)
-    @Operation(summary = "AI 설명 재시도 (학부모)", description = "상태 `EXPLAINED` 에서 AI 규정 설명을 다시 요청합니다.")
+    @Operation(summary = "상담 첫 응답 재시도 (학부모)",
+            description = "민원 작성 때 AI 첫 응답(공감 + 첫 질문)이 실패해 `consultStage` 가 null 이면 다시 만듭니다. 이미 시작했으면 그대로 돌려줍니다.")
     @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200", description = "성공")
     @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "422", description = "AI_PROCESSING_FAILED",
             content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
     @PostMapping("/{id}/explanation/retry")
     public ApiResponse<ComplaintResponse> retry(@CurrentUser AuthUser user, @Parameter(description = "민원 ID") @PathVariable String id) {
         return ApiResponse.ok(complaintService.retryExplanation(user, id));
+    }
+
+    @Tag(name = TAG_PARENT)
+    @Operation(summary = "AI 상담 이어 가기 (학부모)",
+            description = "학부모의 답(자유 입력 또는 빠른 답 `value`) 하나에 똑똑 AI 상담사가 다음 질문·정리·규정 설명을 돌려줍니다. "
+                    + "단계: FACTS(대응 시급도→일시→장소→자세한 이야기→아이 상태→바라는 점) → EXPLAIN(정리표 + 규정·법령) → "
+                    + "RECIPIENT(선생님 추천) → CONTACT(방법·시간) → READY. `status` 는 EXPLAINED 그대로, `consultStage` 만 바뀝니다. "
+                    + "`value` 가 있으면 `content` 보다 우선합니다 (CLOSE·MAKE_CARD 는 보내지 않고 /close·/summary-card 를 호출).")
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200", description = "성공 — consultation 에 학부모 메시지 1개 + AI 메시지가 덧붙음")
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "400", description = "VALIDATION_ERROR — content 1~2000자, 상담 메시지 40개 초과",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409", description = "INVALID_COMPLAINT_STATUS — EXPLAINED 가 아님",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "422", description = "AI_PROCESSING_FAILED — 첫 응답 전 (details.complaintId → retry)",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
+    @PostMapping("/{id}/consultations")
+    public ApiResponse<ComplaintResponse> consult(@CurrentUser AuthUser user, @Parameter(description = "민원 ID") @PathVariable String id,
+                                                  @RequestBody ConsultRequest req) {
+        return ApiResponse.ok(complaintService.consult(user, id, req));
     }
 
     @Tag(name = TAG_PARENT)
@@ -99,8 +120,13 @@ public class ComplaintController {
     }
 
     @Tag(name = TAG_PARENT)
-    @Operation(summary = "요약 카드 생성 (학부모)", description = "AI 가 원문을 교사용 요약 카드로 정리합니다. `EXPLAINED` → `CARD_DRAFTING`.")
+    @Operation(summary = "요약 카드 생성 (학부모)",
+            description = "상담이 `READY` 단계일 때 AI 가 상담 전체(원문 + 상담에서 확인한 사실·바라는 점·연락 방법 + 규정)를 교사용 요약 카드로 정리합니다. "
+                    + "`EXPLAINED` → `CARD_DRAFTING`, `consultStage` 는 null. READY 가 아니면 409 + `details.stage`. "
+                    + "카드의 `urgency` 는 상담에서 정한 대응 시급도, `parentEmotion` 은 교사·대응팀에게만 내려갑니다.")
     @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "201", description = "카드 생성됨")
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409", description = "INVALID_COMPLAINT_STATUS — 상담이 READY 가 아님 (details.stage)",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
     @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "422", description = "AI_PROCESSING_FAILED",
             content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
     @PostMapping("/{id}/summary-card")
@@ -111,7 +137,8 @@ public class ComplaintController {
 
     @Tag(name = TAG_PARENT)
     @Operation(summary = "요약 카드 AI 수정 (학부모)",
-            description = "자연어 지시(`instruction`)로 카드를 고칩니다. `baseVersion` 이 최신이 아니면 409 + `details.latestVersion`.")
+            description = "자연어 지시(`instruction`)로 카드를 고칩니다. '긴급으로 바꿔 주세요'·'급하지 않아요'로 `urgency` 도 바꿀 수 있습니다. "
+                    + "`baseVersion` 이 최신이 아니면 409 + `details.latestVersion`.")
     @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200", description = "성공")
     @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409", description = "INVALID_COMPLAINT_STATUS — 상태 불가 또는 카드 버전 충돌",
             content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
@@ -123,7 +150,8 @@ public class ComplaintController {
 
     @Tag(name = TAG_PARENT)
     @Operation(summary = "요약 카드 직접 수정 (학부모)",
-            description = "보낸 키만 바꿉니다. 태그는 `basicInfo.tags` 로 보냅니다. `baseVersion` 이 최신이 아니면 409 + `details.latestVersion`.")
+            description = "보낸 키만 바꿉니다. 태그는 `basicInfo.tags` 로 보냅니다. `urgency`·`parentEmotion` 은 고칠 수 없고 이전 버전 값을 이어받습니다. "
+                    + "`baseVersion` 이 최신이 아니면 409 + `details.latestVersion`.")
     @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200", description = "성공")
     @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409", description = "INVALID_COMPLAINT_STATUS — 상태 불가 또는 카드 버전 충돌",
             content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))

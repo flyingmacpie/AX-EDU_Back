@@ -62,7 +62,9 @@ class ParentComplaintFlowTest {
         return res.path("data").path("id").asText();
     }
 
+    /** 상담을 READY 까지 진행(빠른 답)한 뒤 요약 카드 */
     private void makeCard(String parent, String id) throws Exception {
+        new ConsultDriver(mvc, mapper, parent).toReady(id, "NORMAL", null);
         mvc.perform(post(API + "/complaints/" + id + "/summary-card").header("Authorization", parent))
                 .andExpect(status().isCreated());
     }

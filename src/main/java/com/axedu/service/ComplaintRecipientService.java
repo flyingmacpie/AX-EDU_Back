@@ -34,8 +34,9 @@ public class ComplaintRecipientService {
      * @param teacherId 교사 ID
      * @param label     예: "3학년 9반 담임 · 수학", "3학년 영어"
      * @param homeroom  담임 여부
+     * @param subjects  가르치는 과목 (담임은 다른 반에서 가르치는 과목 포함) — 상담의 선생님 추천 근거
      */
-    public record Candidate(String teacherId, String label, boolean homeroom) {
+    public record Candidate(String teacherId, String label, boolean homeroom, List<String> subjects) {
     }
 
     @Transactional(readOnly = true)
@@ -67,15 +68,17 @@ public class ComplaintRecipientService {
             }
             boolean isHomeroom = homeroom.get(id);
             String label;
+            List<String> taught;
             if (isHomeroom) {
                 // 담임은 맡은 교과(다른 반 포함)를 덧붙인다: "3학년 9반 담임 · 수학"
-                List<String> taught = subjects.getOrDefault(id, subjectsAnywhere(id, year));
+                taught = subjects.getOrDefault(id, subjectsAnywhere(id, year));
                 label = student.getGrade() + "학년 " + student.getClassNo() + "반 담임"
                         + (taught.isEmpty() ? "" : " · " + String.join(", ", taught));
             } else {
-                label = student.getGrade() + "학년 " + String.join(", ", subjects.getOrDefault(id, List.of("교과")));
+                taught = subjects.getOrDefault(id, List.of());
+                label = student.getGrade() + "학년 " + (taught.isEmpty() ? "교과" : String.join(", ", taught));
             }
-            out.add(new Candidate(id, label, isHomeroom));
+            out.add(new Candidate(id, label, isHomeroom, List.copyOf(taught)));
         }
         out.sort(Comparator.comparing((Candidate c) -> !c.homeroom()).thenComparing(Candidate::label));
         return out;

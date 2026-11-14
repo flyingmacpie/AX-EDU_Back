@@ -29,8 +29,11 @@ import com.axedu.common.security.TextCipher;
 import com.axedu.common.util.IdGenerator;
 import com.axedu.common.util.TimeUtil;
 import com.axedu.dto.complaint.ComplaintResponse;
-import com.axedu.dto.complaint.ComplaintRecipientResponse;
+import com.axedu.entity.enums.ComplaintTag;
+import com.axedu.service.consult.ConsultService;
+import com.axedu.dto.complaint.ConsultRequest;
 import com.axedu.dto.user.UserSummary;
+import com.axedu.dto.complaint.ComplaintRecipientResponse;
 import com.axedu.dto.complaint.CreateComplaintRequest;
 import com.axedu.dto.complaint.EscalationRequest;
 import com.axedu.dto.complaint.EscalationResponse;
@@ -118,6 +121,8 @@ public class ComplaintService {
     private final ChatRoomRepository roomRepository;
     private final ChatRoomService chatRoomService;
     private final ComplaintRecipientService recipientService;
+    private final ConsultService consultService;
+    private final ComplaintMasker masker;
     private final RoomContextService roomContextService;
     private final MessageService messageService;
     private final FileService fileService;
@@ -146,10 +151,17 @@ public class ComplaintService {
             return tx.execute(s -> assembler.view(complaintRepository.findById(dup.get()).orElseThrow(), viewer));
         }
         String complaintId = tx.execute(s -> persistNew(viewer, req, idempotencyKey));
-        if (!runExplanation(complaintId)) {
+        // 상담사의 첫 반응 (공감 + 첫 질문). 실패해도 원문·첫 메시지는 남기고 422 (consultStage = null → retry)
+        startConsult(complaintId, true);
+        return tx.execute(s -> assembler.view(complaintRepository.findById(complaintId).orElseThrow(), viewer));
+    }
+
+    private void startConsult(String complaintId, boolean firstAttempt) {
+        try {
+            tx.executeWithoutResult(s -> consultService.start(complaintRepository.findById(complaintId).orElseThrow(), firstAttempt));
+        } catch (AiException e) {
             throw aiFailed(complaintId);
         }
-        return tx.execute(s -> assembler.view(complaintRepository.findById(complaintId).orElseThrow(), viewer));
     }
 
     private String persistNew(AuthUser viewer, CreateComplaintRequest req, String idempotencyKey) {
@@ -165,6 +177,13 @@ public class ComplaintService {
             }
         }
         String studentId = resolveStudentId(viewer, req.studentId());
+        ComplaintTag category = null;
+        if (req.category() != null && !req.category().isBlank()) {
+            if (!isEnum(ComplaintTag.class, req.category())) {
+                throw ApiException.validation("분류를 다시 골라 주세요.", "category", "invalid");
+            }
+            category = ComplaintTag.valueOf(req.category());
+        }
         String content = req.content() == null ? "" : req.content().trim();
         if (content.isEmpty()) {
             throw ApiException.validation("내용을 입력해 주세요.", "content", "required");
@@ -191,6 +210,7 @@ public class ComplaintService {
             complaintAttachmentRepository.save(new ComplaintAttachment(c.getId(), f.getId(), order++));
         }
 
+        consultService.open(c, category, content);
         history(c.getId(), null, ComplaintStatus.EXPLAINED, viewer);
         publisher.publish(c.getParentId(), RealtimeEvents.COMPLAINT_STATUS_CHANGED,
                 new RealtimeEvents.StatusChanged(c.getId(), null, ComplaintStatus.EXPLAINED, c.getCreatedAt()));
@@ -213,52 +233,25 @@ public class ComplaintService {
         return studentId;
     }
 
-    /** POST /complaints/{id}/explanation/retry — EXPLAINED 유지 */
+    /** POST /complaints/{id}/explanation/retry — 상담 첫 응답(공감 + 첫 질문) 재시도. EXPLAINED 유지, 이미 시작했으면 그대로 */
     public ComplaintResponse retryExplanation(AuthUser viewer, String id) {
         requireRole(viewer, UserRole.PARENT);
-        tx.executeWithoutResult(s -> requireStatus(load(viewer, id), EnumSet.of(ComplaintStatus.EXPLAINED), "AI 설명을 다시 요청"));
-        if (!runExplanation(id)) {
-            throw aiFailed(id);
-        }
+        tx.executeWithoutResult(s -> requireStatus(load(viewer, id), EnumSet.of(ComplaintStatus.EXPLAINED), "AI 답변을 다시 요청"));
+        startConsult(id, false);
         return tx.execute(s -> assembler.view(load(viewer, id), viewer));
     }
 
-    /** AI 설명 1회 시도. 성공·실패 모두 complaint_ai_explanations 에 1행 (자체 트랜잭션) */
-    private boolean runExplanation(String complaintId) {
-        Boolean ok = tx.execute(s -> {
-            Complaint c = complaintRepository.findById(complaintId).orElseThrow();
-            int attempt = explanationRepository.findFirstByComplaintIdOrderByAttemptDesc(complaintId)
-                    .map(e -> e.getAttempt() + 1).orElse(1);
-            String masked = maskedText(c);
-            ComplaintAiExplanation row = new ComplaintAiExplanation();
-            row.setComplaintId(complaintId);
-            row.setAttempt((short) attempt);
-            row.setModelName(aiClient.modelName());
-            row.setMaskedInputHash(sha256(masked));
-            long started = System.currentTimeMillis();
-            try {
-                AiModels.ExplanationResult r = aiClient.explain(new AiModels.ExplanationInput(masked, c.getSchoolId(), attempt));
-                row.setStatus(AiStatus.SUCCEEDED);
-                row.setEmpathy(r.empathy());
-                row.setReason(r.reason());
-                row.setAlternative(r.alternative());
-                row.setRecommendation(r.recommendation());
-                row.setLatencyMs((int) (System.currentTimeMillis() - started));
-                row = explanationRepository.save(row);
-                short order = 0;
-                for (String chunkId : regulationService.existingChunkIds(r.citationChunkIds())) {
-                    citationRepository.save(new ComplaintExplanationCitation(row.getId(), chunkId, order++));
-                }
-                return true;
-            } catch (AiException e) {
-                row.setStatus(AiStatus.FAILED);
-                row.setErrorCode(e.getErrorCode());
-                row.setLatencyMs((int) (System.currentTimeMillis() - started));
-                explanationRepository.save(row);
-                return false;
-            }
-        });
-        return Boolean.TRUE.equals(ok);
+    /**
+     * POST /complaints/{id}/consultations — 상담 한 턴 (학부모 답 → 상담사의 다음 말). status 는 EXPLAINED 그대로.
+     * 첫 응답 전이면 422 AI_PROCESSING_FAILED + details.complaintId, 메시지 40개 초과·내용 오류는 400
+     */
+    @Transactional
+    public ComplaintResponse consult(AuthUser viewer, String id, ConsultRequest req) {
+        requireRole(viewer, UserRole.PARENT);
+        Complaint c = load(viewer, id);
+        requireStatus(c, EnumSet.of(ComplaintStatus.EXPLAINED), "상담을 이어");
+        consultService.turn(c, req == null ? null : req.content(), req == null ? null : req.value());
+        return assembler.view(c, viewer);
     }
 
     private static ApiException aiFailed(String complaintId) {
@@ -336,7 +329,7 @@ public class ComplaintService {
 
     /**
      * GET /complaints/{id}/recipients — 받을 수 있는 선생님. 방에서 시작해 교사가 고정된 민원은 그 한 명만.
-     * 추천: 지금은 담임 (TODO(AI 상담): 상담에서 정한 선생님 proposed_teacher_id 로 바꾼다)
+     * 추천: 상담에서 정한 선생님 (proposed_teacher_id), 없으면 담임
      */
     @Transactional(readOnly = true)
     public List<ComplaintRecipientResponse> recipients(AuthUser viewer, String id) {
@@ -351,12 +344,17 @@ public class ComplaintService {
                     "이 채팅방의 선생님이에요."));
         }
         Map<String, UserSummary> users = userService.summaries(candidates.stream().map(ComplaintRecipientService.Candidate::teacherId).toList());
-        String pick = candidates.stream().filter(ComplaintRecipientService.Candidate::homeroom)
+        // 추천: 상담에서 정한 선생님, 상담에서 정하지 않았으면 담임
+        String proposed = consultService.proposedTeacherId(c);
+        boolean fromConsult = proposed != null && candidates.stream().anyMatch(x -> x.teacherId().equals(proposed));
+        String pick = fromConsult ? proposed : candidates.stream().filter(ComplaintRecipientService.Candidate::homeroom)
                 .map(ComplaintRecipientService.Candidate::teacherId).findFirst()
                 .orElse(candidates.isEmpty() ? null : candidates.get(0).teacherId());
         return candidates.stream()
                 .map(x -> new ComplaintRecipientResponse(users.get(x.teacherId()), x.label(), x.teacherId().equals(pick),
-                        x.teacherId().equals(pick) ? (x.homeroom() ? "담임 선생님이 먼저 상황을 확인해요." : "이 반을 맡은 선생님이에요.") : null))
+                        !x.teacherId().equals(pick) ? null
+                                : fromConsult ? "상담에서 함께 정한 선생님이에요."
+                                : x.homeroom() ? "담임 선생님이 먼저 상황을 확인해요." : "이 반을 맡은 선생님이에요."))
                 .toList();
     }
 
@@ -389,7 +387,7 @@ public class ComplaintService {
         }
         Page<Complaint> result = complaintRepository.findAll(spec,
                 PageRequest.of(page, size, Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id"))));
-        List<ComplaintResponse> items = result.getContent().stream().map(c -> assembler.view(c, viewer)).toList();
+        List<ComplaintResponse> items = result.getContent().stream().map(c -> assembler.view(c, viewer, false)).toList();
         return new ComplaintPage(items, result.hasNext() ? String.valueOf(page + 1) : null);
     }
 
@@ -735,18 +733,7 @@ public class ComplaintService {
      * TODO(AI): 학년·반, 전화번호 등 개인정보 패턴까지 가리는 가명처리 모듈로 교체
      */
     public String maskedText(Complaint c) {
-        String text = cipher.decrypt(c.getOriginalTextEnc());
-        User student = userService.get(c.getStudentId());
-        User parent = userService.get(c.getParentId());
-        for (String name : List.of(student.getName(), parent.getName(), nickname(student.getName()))) {
-            if (name != null && name.length() >= 2) {
-                text = text.replace(name, "OOO");
-            }
-        }
-        if (student.getStudentNumber() != null) {
-            text = text.replace(student.getStudentNumber(), "00000");
-        }
-        return text;
+        return masker.mask(c, cipher.decrypt(c.getOriginalTextEnc()));
     }
 
     /** 부르는 이름: 성을 빼고, 끝 글자에 받침이 있으면 '이' 를 붙인다 (김민수 → 민수, 김리현 → 리현이) */
