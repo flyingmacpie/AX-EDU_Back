@@ -23,6 +23,16 @@ spring:
 server:
   port: 8080
 
+# API 문서: Swagger UI http://localhost:8080/swagger-ui.html , OpenAPI JSON /v3/api-docs
+springdoc:
+  paths-to-match: /api/**
+  default-produces-media-type: application/json
+  swagger-ui:
+    tags-sorter: alpha
+    operations-sorter: method
+    persist-authorization: true   # 새로고침해도 Authorize 토큰 유지
+    display-request-duration: true
+
 axedu:
   jwt:
     # HS256 서명 키 (32바이트 이상). 운영에서는 환경 변수로 주입

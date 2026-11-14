@@ -25,6 +25,16 @@ GET http://localhost:8080/api/axedu/v1/dev/token?userId=usr_t1
 시드 계정: `usr_t1`(교사 김수학, 3-9 담임) · `usr_t2`(교사 이영어) · `usr_p1`·`usr_p2`(학부모) · `usr_s1`~`usr_s6`(학생) · `usr_rt1`(민원대응팀) — 프론트 목 서버와 같은 사용자·방·메시지·제출된 민원(`cmp_seed1`)입니다.
 H2 콘솔: `http://localhost:8080/h2-console` (JDBC URL `jdbc:h2:mem:axedu`, 사용자 `sa`)
 
+## API 문서 (Swagger)
+
+서버 실행 후 브라우저에서 열면 모든 API 를 확인·호출해 볼 수 있습니다.
+
+- Swagger UI: `http://localhost:8080/swagger-ui.html`
+- OpenAPI JSON: `http://localhost:8080/v3/api-docs` (Postman 등으로 가져오기 가능)
+
+호출해 보기: **Dev** 그룹 `GET /dev/token` 에 `usr_t1`(교사)·`usr_p1`(학부모) 등을 넣고 실행 → 받은 `accessToken` 을 오른쪽 위 **Authorize** 에 붙여 넣기.
+문서 설정은 `config/OpenApiConfig.java`, `prod` 프로필에서는 기본으로 꺼져 있습니다 (`AXEDU_SWAGGER_ENABLED=true` 로 켬).
+
 운영(PostgreSQL):
 
 ```bash
