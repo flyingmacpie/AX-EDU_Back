@@ -1,0 +1,10 @@
+.git
+.gradle
+build
+out
+uploads
+.env
+.idea
+.vscode
+**/__pycache__
+AI_DATA/raw
