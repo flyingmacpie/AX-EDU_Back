@@ -49,6 +49,37 @@ GET http://localhost:8080/api/axedu/v1/dev/token?userId=usr_t1
 호출해 보기: **Dev** 그룹 `GET /dev/token` 에 `usr_t1`(교사)·`usr_p1`(학부모) 등을 넣고 실행 → 받은 `accessToken` 을 오른쪽 위 **Authorize** 에 붙여 넣기.
 문서 설정은 `config/OpenApiConfig.java`, `prod` 프로필에서는 기본으로 꺼져 있습니다 (`AXEDU_SWAGGER_ENABLED=true` 로 켬).
 
+## 법령 조회 (AI_DATA, 키워드 기반)
+
+민원 처리 흐름 중 **키워드 → 법령 조회** 단계입니다.
+
+```
+학부모 민원 → (AI) 법령 조회용 키워드 추출 → [법령 조회] → (AI) 조회 결과 + 민원으로 요약 카드 JSON → 프론트
+```
+
+- 데이터: `AI_DATA/chunks.jsonl` (법령·행정규칙·자치법규 조문, 판례·인권위 결정례·법령해석례 단락 3,762개, `AI_DATA/collect_laws.py` 로 수집)
+- 검색: `ai/law_search.py` — 표준 라이브러리만 사용 (pip 설치 불필요)
+  - 한글 2글자 단위 BM25 순위 → 조사가 붙은 표현('휴대전화를')도 검색됨
+  - 키워드가 **단어 시작**에서 일치해야 인정 ('교체'가 '학교체육'에 걸리지 않음), 제목·조문 제목 일치는 가산점
+  - 키워드를 많이 맞춘 결과가 위로, 같은 문서는 최대 2개, `perType` 으로 자료 종류를 골고루
+- 서버: `ai/law_search_server.py` (기본 `127.0.0.1:8090`) ← Spring Boot `LawSearchClient` 가 호출
+  - 주소는 `.env` 의 `AXEDU_LAW_SEARCH_URL` 로 바꿀 수 있음
+
+```bash
+python3 ai/law_search_server.py                  # 법령 조회 서버 (백엔드와 함께 실행)
+python3 ai/law_search.py 휴대전화 압수 생활지도     # 터미널에서 바로 검색해 보기
+python3 -m unittest discover -s ai -v            # 파이썬 테스트
+```
+
+API (Swagger **법령 조회** 그룹): `POST /api/axedu/v1/laws/search`
+
+```json
+{ "keywords": ["휴대전화", "압수", "생활지도"], "limit": 10, "perType": 4, "types": ["법령", "행정규칙"] }
+```
+
+응답 `data` 는 관련도 순 배열: `type`(법령·판례 등) · `title` · `article` · `articleTitle` · `text`(전문, AI 입력용) · `snippet`(미리보기) · `matchedKeywords` · `score` · `sourceUrl`.
+파이썬 서버가 꺼져 있으면 500 `INTERNAL_ERROR`. 민원 흐름에서는 서비스가 `LawSearchClient` 를 직접 호출합니다.
+
 ## DB 스키마 (Flyway)
 
 - 스키마 정의: `src/main/resources/db/migration/V1__init.sql` (설계서의 enum 21종·테이블 26개·인덱스·`updated_at` 트리거·`v_complaints_teacher` 뷰)

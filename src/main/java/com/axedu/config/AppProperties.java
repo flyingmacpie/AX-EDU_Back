@@ -8,10 +8,11 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * axedu.* 설정.
  *
  * @param cors     프론트 주소 (예: http://localhost:5173)
- * @param storage  파일 저장 위치·서명 URL 설정
+ * @param storage   파일 저장 위치·서명 URL 설정
+ * @param lawSearch 법령 조회 파이썬 서버 (ai/law_search_server.py)
  */
 @ConfigurationProperties(prefix = "axedu")
-public record AppProperties(Cors cors, Storage storage) {
+public record AppProperties(Cors cors, Storage storage, LawSearch lawSearch) {
 
     public record Cors(List<String> allowedOrigins) {
     }
@@ -23,5 +24,12 @@ public record AppProperties(Cors cors, Storage storage) {
      * @param signKey       서명 URL HMAC 키
      */
     public record Storage(String localDir, String publicBaseUrl, long urlTtlMinutes, String signKey) {
+    }
+
+    /**
+     * @param baseUrl       법령 조회 서버 주소 (예: http://127.0.0.1:8090)
+     * @param timeoutMillis 연결·응답 대기 시간
+     */
+    public record LawSearch(String baseUrl, int timeoutMillis) {
     }
 }

@@ -9,3 +9,4 @@ uploads/
 
 # 로컬 비밀 값 (DB 계정 등). 예시는 .env.example
 .env
+__pycache__/
