@@ -49,6 +49,90 @@ GET http://localhost:8080/api/axedu/v1/dev/token?userId=usr_t1
 호출해 보기: **Dev** 그룹 `GET /dev/token` 에 `usr_t1`(교사)·`usr_p1`(학부모) 등을 넣고 실행 → 받은 `accessToken` 을 오른쪽 위 **Authorize** 에 붙여 넣기.
 문서 설정은 `config/OpenApiConfig.java`, `prod` 프로필에서는 기본으로 꺼져 있습니다 (`AXEDU_SWAGGER_ENABLED=true` 로 켬).
 
+## 똑똑 AI 상담사 (프론트 PR #4·#5)
+
+학부모는 선생님 방이 아니라 **민원하기** 첫 화면에서 AI 상담사와 여러 번 대화하고, 상담에서 정한 선생님에게 요약 카드를 보냅니다.
+
+```
+POST /complaints (사전 분류 category 선택)
+  → 첫 반응: 공감 + (안전·건강 표현이면 '서둘러 살펴야') + 대응 시급도 질문            consultStage = FACTS
+POST /complaints/{id}/consultations  (학부모 답 한 번 → 상담사의 다음 말)
+  FACTS    대응 시급도 → 일시 → 장소 → 자세한 이야기 → 아이 상태 → 바라는 점 (이미 말한 칸은 건너뜀)
+  EXPLAIN  사실관계 정리표 + 규정·법령 설명 (AI 1단계 키워드 → 법령 조회 → ChatGPT 설명, aiExplanation 에도 저장)
+  RECIPIENT 연락할 선생님 추천 근거 + 선생님 빠른 답 (value = teacherId)
+  CONTACT  연락 방법 → 시간대
+  READY    최종 정리표 + '요약 카드 만들기'
+POST /complaints/{id}/summary-card   (READY 일 때만, 아니면 409 + details.stage)
+  → AI 2단계: 상담 전체 + 규정 → 카드 JSON (urgency, 교사용 parentEmotion)        CARD_DRAFTING, consultStage = null
+GET  /complaints/{id}/recipients → POST /submit {teacherId}  (DIRECT 방 찾기/생성)
+```
+
+- **역할 분담**: 단계 진행·슬롯·빠른 답은 서버 규칙(`service/consult/ConsultEngine`, 프론트 목 `mockConsult.ts` 와 같은 흐름)이 정해 화면이 안정적이고,
+  학부모가 **직접 쓴 말의 해석·공감 문장·규정 설명·카드 작성**은 ChatGPT 가 맡습니다. `OPENAI_API_KEY` 가 없거나 AI 호출이 실패하면 같은 자리를 규칙이 채워 상담이 멈추지 않습니다.
+- **프롬프트** (`src/main/resources/prompts/`): `consult-turn`(자유 입력 해석 + 공감) · `consult-explain`(자료 목록 안에서만 인용, 판정 금지) · `consult-card`(교사용 카드 + 감정 상태). 모두 strict JSON 스키마.
+- **대응 시급도** `urgency`: 학부모·교사 모두. 상담에서 고른 값, 말로 수정('긴급으로 바꿔 주세요')으로만 변경, PATCH 로는 못 바꿈.
+- **학부모 감정 상태** `parentEmotion`: **교사·민원대응팀에게만**(학부모 응답에서는 키 없음). 신호 라벨만 담고 원문은 넣지 않으며, 책임 추궁·외부 신고 문장은 카드 본문에서 뺍니다. 규칙 판단을 바닥으로 AI 판단을 더합니다.
+- **개인정보**: 상담 상태·대화는 원문처럼 AES-256-GCM 암호화(`complaint_consult_states.state_enc`, `complaint_consult_messages.body_enc`), 교사 응답에서 제외. AI 에는 이름·학번·연락처를 가린 문장만 보냅니다.
+- **근거 자료**: 학교 규정(학칙·가정통신문) + AI_DATA 법령 조회 결과. 인용한 법령 조항은 `regulations`(school_id NULL = 전국 공통)·`regulation_chunks` 에 등록됩니다. 법령 조회 서버가 꺼져 있으면 학교 규정만으로 설명합니다.
+- DB: `V3__consultation_urgency_emotion.sql` (상담 테이블 2개, 카드 `urgency_level`·`urgency_reason`·`parent_emotion`)
+- 로컬 테스트: 민원 원문에 `[AI실패]` 를 넣으면 첫 응답이 한 번 실패(422)하고 `explanation/retry` 로 이어집니다.
+
+## 민원 AI 1단계: 키워드 추출 (ChatGPT)
+
+```
+학부모 민원 → [AI 1단계: 키워드 추출] → 법령 조회 → (AI 2단계: 요약 카드 JSON, 예정) → 프론트
+```
+
+1. `.env` 에 OpenAI API 키를 넣습니다. 비워 두면 규칙 기반 대체 구현(`model: rule-based`)으로 동작합니다.
+   ```
+   OPENAI_API_KEY=sk-...
+   # AXEDU_OPENAI_MODEL=gpt-4.1-mini   (기본값, 바꿀 때만)
+   ```
+2. Swagger **AI** 그룹 `POST /api/axedu/v1/ai/keywords` 로 확인합니다. `searchLaws: true` 면 법령 조회까지 이어서 합니다.
+   ```json
+   { "text": "아이 폰을 수업시간에 봤다고 일주일째 안 돌려주신대요", "searchLaws": true }
+   ```
+   응답 `data`: `situationSummary` · `legalIssues`(쟁점) · `keywords`(`term` + 근거 `evidence`) · `searchKeywords` · `category` · `laws`
+
+- 코드: `service/ai/keyword/` (`KeywordExtractor` → `OpenAiKeywordExtractor` / `RuleBasedKeywordExtractor`), OpenAI 호출은 `service/ai/openai/OpenAiChatClient` (2단계에서도 재사용)
+- 프롬프트: `src/main/resources/prompts/keyword-extraction/` — 문구만 고치면 코드 수정 없이 반영
+  - `system.md` 역할·배경(검색 엔진 특성)·작업 순서·키워드 규칙·구어→법령 용어 변환 표·검색 자료 실제 용어·분류·보안 규칙
+  - `examples.json` few-shot 3개 (생활지도 / 학교폭력 / 평가 + 프롬프트 인젝션 문장이 섞인 예시)
+  - `schema.json` Structured Outputs 스키마 — 필드 순서(상황 → 쟁점 → 키워드 → 분류)대로 생각하게 함
+- 안전장치: 민원을 `<complaint>` 태그로 감싸 '자료'로만 취급, 전화번호·이메일·주민번호는 보내기 전에 가림, 결과 키워드는 일반어·개인정보·중복을 걸러 최대 6개
+- 실패 시 422 `AI_PROCESSING_FAILED` + `details.aiErrorCode` (`UNAUTHORIZED` 키 오류, `MODEL_NOT_FOUND`, `RATE_LIMITED`, `TIMEOUT`, `REFUSED` 등)
+
+## 법령 조회 (AI_DATA, 키워드 기반)
+
+민원 처리 흐름 중 **키워드 → 법령 조회** 단계입니다.
+
+```
+학부모 민원 → (AI) 법령 조회용 키워드 추출 → [법령 조회] → (AI) 조회 결과 + 민원으로 요약 카드 JSON → 프론트
+```
+
+- 데이터: `AI_DATA/chunks.jsonl` (법령·행정규칙·자치법규 조문, 판례·인권위 결정례·법령해석례 단락 3,762개, `AI_DATA/collect_laws.py` 로 수집)
+- 검색: `ai/law_search.py` — 표준 라이브러리만 사용 (pip 설치 불필요)
+  - 한글 2글자 단위 BM25 순위 → 조사가 붙은 표현('휴대전화를')도 검색됨
+  - 키워드가 **단어 시작**에서 일치해야 인정 ('교체'가 '학교체육'에 걸리지 않음), 제목·조문 제목 일치는 가산점
+  - 키워드를 많이 맞춘 결과가 위로, 같은 문서는 최대 2개, `perType` 으로 자료 종류를 골고루
+- 서버: `ai/law_search_server.py` (기본 `127.0.0.1:8090`) ← Spring Boot `LawSearchClient` 가 호출
+  - 주소는 `.env` 의 `AXEDU_LAW_SEARCH_URL` 로 바꿀 수 있음
+
+```bash
+python3 ai/law_search_server.py                  # 법령 조회 서버 (백엔드와 함께 실행)
+python3 ai/law_search.py 휴대전화 압수 생활지도     # 터미널에서 바로 검색해 보기
+python3 -m unittest discover -s ai -v            # 파이썬 테스트
+```
+
+API (Swagger **법령 조회** 그룹): `POST /api/axedu/v1/laws/search`
+
+```json
+{ "keywords": ["휴대전화", "압수", "생활지도"], "limit": 10, "perType": 4, "types": ["법령", "행정규칙"] }
+```
+
+응답 `data` 는 관련도 순 배열: `type`(법령·판례 등) · `title` · `article` · `articleTitle` · `text`(전문, AI 입력용) · `snippet`(미리보기) · `matchedKeywords` · `score` · `sourceUrl`.
+파이썬 서버가 꺼져 있으면 500 `INTERNAL_ERROR`. 민원 흐름에서는 서비스가 `LawSearchClient` 를 직접 호출합니다.
+
 ## DB 스키마 (Flyway)
 
 - 스키마 정의: `src/main/resources/db/migration/V1__init.sql` (설계서의 enum 21종·테이블 26개·인덱스·`updated_at` 트리거·`v_complaints_teacher` 뷰)
@@ -102,7 +186,7 @@ com.axedu
 | --- | --- |
 | 채팅 | `GET /chat/rooms` · `GET /chat/contacts` · `POST /chat/rooms` · `GET /chat/rooms/{id}` · `PATCH /chat/rooms/{id}/settings` · `DELETE /chat/rooms/{id}/members/me` · `GET·POST /chat/rooms/{id}/messages` · `POST /chat/rooms/{id}/read` · `GET·PUT /me/chat-settings` |
 | 파일 | `POST /files` (multipart `file`) · `GET /files/{id}/content?expires&sig` (서명 URL) |
-| 민원 | `POST /complaints` · `/explanation/retry` · `/close` · `POST /summary-card` · `/summary-card/revisions` · `PATCH /summary-card` · `/submit` · `GET /complaints` · `GET /complaints/{id}` · `/acknowledge` · `/reply-drafts` · `/reply` · `/escalations` · `/resolve` |
+| 민원 | `POST /complaints` (`roomId` 선택) · `/explanation/retry` · `/close` · `POST /summary-card` · `/summary-card/revisions` · `PATCH /summary-card` · `POST /complaints/{id}/consultations` (**AI 상담**) · `GET /complaints/{id}/recipients` (**추가**) · `/submit` (`teacherId`) · `GET /complaints` · `GET /complaints/{id}` · `/acknowledge` · `/reply-drafts` · `/reply` · `/escalations` · `/resolve` |
 | 사용자 | `GET /me` (**추가**) |
 | 규정 | `GET /regulations` (스텁, 빈 목록) |
 | WebSocket | `ws://{host}/ws/axedu/v1?token=` — ping/pong + `message.created` `message.read` `room.created` `room.updated` `room.unread_changed` `complaint.status_changed` `complaint.card_updated` `escalation.created` `escalation.updated` |
@@ -114,6 +198,14 @@ com.axedu
 - 교사에게는 `originalText`·`aiExplanation` 키 생략 + 제출된 카드 버전, 학부모 원문은 AES-256-GCM 암호화 저장
 - 422 `AI_PROCESSING_FAILED` 는 `details.complaintId`, 카드 버전 충돌은 409 + `details.latestVersion`, 검증 실패는 `details.fields`
 - 모든 시각은 `+09:00` ISO 8601, 이벤트는 커밋 후 전송
+
+### 학부모 민원 흐름 개편 (프론트 PR #4) 반영
+
+- 민원은 방·교사 없이 시작할 수 있습니다 (`POST /complaints` 의 `roomId` 생략 → 응답 `teacher`·`roomId` 가 `null`). `roomId` 를 주면 이전처럼 그 방의 선생님으로 고정됩니다.
+- `GET /complaints/{id}/recipients`: 학생의 이번 학년도 담임 + 교과 교사, `label` 예 "3학년 9반 담임 · 수학" / "3학년 영어". 추천(`recommended`)은 지금은 담임이고, AI 상담이 들어오면 상담에서 정한 선생님으로 바뀝니다.
+- `POST /complaints/{id}/submit` 의 `teacherId`: 후보가 아니거나 방의 선생님과 다르면 400 `details.fields.teacherId`. 학부모–선생님 DIRECT 방을 찾고 없으면 만든 뒤(`room.created`) 카드를 올립니다.
+- DB `V2__complaint_room_teacher_nullable.sql`: `complaints.room_id`·`teacher_id` NULL 허용 + 제출 이후 상태에서는 둘 다 필수(CHECK).
+- AI 상담은 아래 「똑똑 AI 상담사」 참고.
 
 ## 계약서에 없던 것 / 프론트 쪽 확인 필요
 

@@ -68,3 +68,14 @@ axedu:
     public-base-url: ${AXEDU_PUBLIC_BASE_URL:http://localhost:8080}
     url-ttl-minutes: 60
     sign-key: ${AXEDU_FILE_SIGN_KEY:axedu-local-dev-file-sign-key}
+  # 키워드 기반 법령 조회 파이썬 서버 (python3 ai/law_search_server.py)
+  law-search:
+    base-url: ${AXEDU_LAW_SEARCH_URL:http://127.0.0.1:8090}
+    timeout-millis: 3000
+  # OpenAI(ChatGPT) — 민원 키워드 추출. 키가 비어 있으면 규칙 기반 대체 구현으로 동작
+  openai:
+    api-key: ${OPENAI_API_KEY:}
+    base-url: ${OPENAI_BASE_URL:https://api.openai.com/v1}
+    model: ${AXEDU_OPENAI_MODEL:gpt-4.1-mini}
+    timeout-millis: ${AXEDU_OPENAI_TIMEOUT_MILLIS:20000}
+    temperature: 0.2

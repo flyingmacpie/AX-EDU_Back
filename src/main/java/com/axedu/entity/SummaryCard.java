@@ -9,6 +9,8 @@ import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
 import com.axedu.entity.enums.CardSource;
+import com.axedu.entity.enums.UrgencyLevel;
+import com.axedu.entity.value.ParentEmotion;
 import com.axedu.entity.value.CardSuggestion;
 import com.axedu.entity.value.SituationItem;
 
@@ -96,6 +98,20 @@ public class SummaryCard {
 
     @JdbcTypeCode(SqlTypes.JSON)
     private List<CardSuggestion> suggestions;
+
+    /** 대응 시급도 (학부모·교사 모두 본다) */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "urgency_level", length = 8, nullable = false)
+    private UrgencyLevel urgencyLevel = UrgencyLevel.NORMAL;
+
+    /** 예: '학생 안전·건강 관련'. URGENT 가 아니면 null */
+    @Column(name = "urgency_reason", length = 100)
+    private String urgencyReason;
+
+    /** 학부모 감정 상태 (교사·민원대응팀만 본다). 학부모가 고칠 수 없고 수정 버전에 그대로 이어진다 */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "parent_emotion")
+    private ParentEmotion parentEmotion;
 
     @Column(name = "created_by", length = 32, nullable = false)
     private String createdBy;

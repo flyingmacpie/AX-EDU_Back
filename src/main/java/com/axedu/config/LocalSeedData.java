@@ -38,6 +38,7 @@ import com.axedu.entity.enums.RegulationStatus;
 import com.axedu.entity.enums.RoomType;
 import com.axedu.entity.enums.SourceType;
 import com.axedu.entity.enums.TeamPosition;
+import com.axedu.entity.enums.UrgencyLevel;
 import com.axedu.entity.enums.UserRole;
 import com.axedu.entity.value.SituationItem;
 import com.axedu.repository.ChatRoomMemberRepository;
@@ -55,6 +56,7 @@ import com.axedu.repository.SummaryCardRegulationRepository;
 import com.axedu.repository.SummaryCardRepository;
 import com.axedu.repository.TeacherClassRepository;
 import com.axedu.repository.UserRepository;
+import com.axedu.service.consult.ConsultText;
 import com.axedu.service.ContactService;
 
 import lombok.RequiredArgsConstructor;
@@ -127,6 +129,12 @@ public class LocalSeedData implements ApplicationRunner {
                 "수업 시간 중 휴대전화는 담임교사가 일괄 보관하며, 종례 시 돌려준다. 긴급한 연락은 교무실 대표번호로 한다.");
         regulation("rdoc_eval", "학업성적관리규정", "reg_15", "학업성적관리규정 제15조(수행평가)",
                 "수행평가의 채점 기준은 평가 전에 학생에게 안내하며, 학생·학부모가 요청하면 채점 결과와 기준을 설명한다.");
+        regulation("rdoc_rule", "학생생활규정", "reg_8", "학생생활규정 제8조(용의·복장)",
+                "학생은 교복을 단정히 착용하며, 체육 활동 시에는 체육복을 입는다. 계절·활동별 착용 기준은 학교장이 따로 정한다.");
+        regulation("rdoc_eval", "학업성적관리규정", "reg_9", "학업성적관리규정 제9조(출결)",
+                "질병·경조사 등으로 결석한 경우 결석 후 5일 이내에 증빙 서류를 담임교사에게 제출한다.");
+        regulation("rdoc_n87", "가정통신문 제2026-87호", SourceType.NOTICE_LETTER, "reg_n87", "가정통신문 제2026-87호(야간 자율학습 운영 안내)",
+                "야간 자율학습에 빠질 때는 보호자가 미리 담임교사에게 알려 주세요. 사전 연락이 없으면 보호자께 문자로 안내합니다.");
 
         // ---- 교사–학생 ----
         room("room_rh", RoomType.DIRECT, null, null, "2026-09-08T15:12:40+09:00", List.of("usr_t1", "usr_s1"));
@@ -218,6 +226,9 @@ public class LocalSeedData implements ApplicationRunner {
         card.setPreferredMethods(new ArrayList<>(List.of("CALL")));
         card.setPreferredFrom(LocalTime.of(16, 0));
         card.setPreferredTo(LocalTime.of(17, 0));
+        // 프론트 시드와 같이: 며칠 안에 답변 + 원문으로 판단한 학부모 감정 상태 (교사 데모용)
+        card.setUrgencyLevel(UrgencyLevel.SOON);
+        card.setParentEmotion(ConsultText.assessEmotion(List.of(original)));
         card.setCreatedBy("usr_p2");
         card.setConfirmedAt(submittedAt);
         card.setCreatedAt(createdAt.plusMinutes(2));
@@ -265,10 +276,14 @@ public class LocalSeedData implements ApplicationRunner {
     }
 
     private void regulation(String docId, String title, String chunkId, String label, String content) {
+        regulation(docId, title, SourceType.SCHOOL_RULE, chunkId, label, content);
+    }
+
+    private void regulation(String docId, String title, SourceType type, String chunkId, String label, String content) {
         Regulation r = new Regulation();
         r.setId(docId);
         r.setSchoolId(SCHOOL);
-        r.setSourceType(SourceType.SCHOOL_RULE);
+        r.setSourceType(type);
         r.setTitle(title);
         r.setEffectiveFrom(LocalDate.of(2026, 3, 1));
         r.setStatus(RegulationStatus.ACTIVE);

@@ -11,3 +11,8 @@ spring:
     database-platform: org.hibernate.dialect.H2Dialect
     hibernate:
       ddl-auto: create
+
+# 테스트에서는 .env 에 키가 있어도 OpenAI 를 부르지 않는다 (규칙 기반 대체 구현)
+axedu:
+  openai:
+    api-key: ""
