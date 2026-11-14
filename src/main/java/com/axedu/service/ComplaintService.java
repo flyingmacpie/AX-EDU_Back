@@ -29,6 +29,8 @@ import com.axedu.common.security.TextCipher;
 import com.axedu.common.util.IdGenerator;
 import com.axedu.common.util.TimeUtil;
 import com.axedu.dto.complaint.ComplaintResponse;
+import com.axedu.dto.complaint.ComplaintRecipientResponse;
+import com.axedu.dto.user.UserSummary;
 import com.axedu.dto.complaint.CreateComplaintRequest;
 import com.axedu.dto.complaint.EscalationRequest;
 import com.axedu.dto.complaint.EscalationResponse;
@@ -114,6 +116,8 @@ public class ComplaintService {
     private final ResponseTeamMemberRepository teamRepository;
     private final ParentStudentRepository parentStudentRepository;
     private final ChatRoomRepository roomRepository;
+    private final ChatRoomService chatRoomService;
+    private final ComplaintRecipientService recipientService;
     private final RoomContextService roomContextService;
     private final MessageService messageService;
     private final FileService fileService;
@@ -152,9 +156,13 @@ public class ComplaintService {
         if (req == null) {
             throw ApiException.validation("내용을 입력해 주세요.", "content", "required");
         }
-        RoomContext ctx = roomContextService.requireActiveMember(nvl(req.roomId()), viewer);
-        if (ctx.room().getType() != RoomType.DIRECT || ctx.teacher() == null) {
-            throw ApiException.notFound("채팅방을 찾을 수 없습니다.");
+        // 방에서 시작하면 그 방의 선생님으로 고정, 학부모 첫 화면(민원하기)에서 시작하면 제출할 때 고른다
+        RoomContext ctx = null;
+        if (req.roomId() != null && !req.roomId().isBlank()) {
+            ctx = roomContextService.requireActiveMember(req.roomId(), viewer);
+            if (ctx.room().getType() != RoomType.DIRECT || ctx.teacher() == null) {
+                throw ApiException.notFound("채팅방을 찾을 수 없습니다.");
+            }
         }
         String studentId = resolveStudentId(viewer, req.studentId());
         String content = req.content() == null ? "" : req.content().trim();
@@ -168,9 +176,9 @@ public class ComplaintService {
         Complaint c = new Complaint();
         c.setId(IdGenerator.newId(IdGenerator.COMPLAINT));
         c.setSchoolId(viewer.schoolId());
-        c.setRoomId(ctx.room().getId());
+        c.setRoomId(ctx == null ? null : ctx.room().getId());
         c.setParentId(viewer.id());
-        c.setTeacherId(ctx.teacher().getId());
+        c.setTeacherId(ctx == null ? null : ctx.teacher().getId());
         c.setStudentId(studentId);
         c.setStatus(ComplaintStatus.EXPLAINED);
         c.setOriginalTextEnc(cipher.encrypt(content));
@@ -271,6 +279,7 @@ public class ComplaintService {
 
     /**
      * POST /complaints/{id}/submit — CARD_DRAFTING → SUBMITTED.
+     * 받는 선생님(teacherId)과의 DIRECT 방을 찾거나 만들고(room.created) complaints.room_id·teacher_id 확정,
      * 카드 confirmed_at 기록, 방에 COMPLAINT_CARD 메시지 1건 (학부모와 교사가 같은 카드를 본다)
      */
     @Transactional
@@ -282,8 +291,14 @@ public class ComplaintService {
         }
         Complaint c = load(viewer, id);
         requireStatus(c, EnumSet.of(ComplaintStatus.CARD_DRAFTING), "보내기");
+        String teacherId = resolveRecipient(c, req == null ? null : req.teacherId());
         SummaryCard card = latestCardOrConflict(c, req == null ? null : req.cardVersion());
 
+        if (c.getRoomId() == null) {
+            ChatRoom room = chatRoomService.ensureDirect(viewer, teacherId);
+            c.setRoomId(room.getId());
+            c.setTeacherId(teacherId);
+        }
         var now = TimeUtil.now();
         card.setConfirmedAt(now);
         cardRepository.save(card);
@@ -296,6 +311,53 @@ public class ComplaintService {
                 null, List.of(), true);
         idempotencyService.remember(viewer.id(), idempotencyKey, EP_SUBMIT, 200, c.getId());
         return assembler.view(c, viewer);
+    }
+
+    /**
+     * 받는 선생님 확인. 방에서 시작한 민원은 그 방의 선생님(생략 가능, 다르면 400),
+     * 아니면 recipients 후보 중 하나여야 한다 (400 VALIDATION_ERROR + details.fields.teacherId)
+     */
+    private String resolveRecipient(Complaint c, String teacherId) {
+        boolean blank = teacherId == null || teacherId.isBlank();
+        if (c.getTeacherId() != null) {
+            if (!blank && !c.getTeacherId().equals(teacherId)) {
+                throw ApiException.validation("받을 선생님을 다시 골라 주세요.", "teacherId", "invalid");
+            }
+            return c.getTeacherId();
+        }
+        if (blank) {
+            throw ApiException.validation("받을 선생님을 골라 주세요.", "teacherId", "required");
+        }
+        if (recipientService.find(userService.get(c.getStudentId()), teacherId).isEmpty()) {
+            throw ApiException.validation("받을 선생님을 다시 골라 주세요.", "teacherId", "invalid");
+        }
+        return teacherId;
+    }
+
+    /**
+     * GET /complaints/{id}/recipients — 받을 수 있는 선생님. 방에서 시작해 교사가 고정된 민원은 그 한 명만.
+     * 추천: 지금은 담임 (TODO(AI 상담): 상담에서 정한 선생님 proposed_teacher_id 로 바꾼다)
+     */
+    @Transactional(readOnly = true)
+    public List<ComplaintRecipientResponse> recipients(AuthUser viewer, String id) {
+        requireRole(viewer, UserRole.PARENT);
+        Complaint c = load(viewer, id);
+        User student = userService.get(c.getStudentId());
+        List<ComplaintRecipientService.Candidate> candidates = recipientService.candidates(student);
+        if (c.getTeacherId() != null) {
+            String label = candidates.stream().filter(x -> x.teacherId().equals(c.getTeacherId()))
+                    .map(ComplaintRecipientService.Candidate::label).findFirst().orElse("선생님");
+            return List.of(new ComplaintRecipientResponse(userService.summary(userService.get(c.getTeacherId())), label, true,
+                    "이 채팅방의 선생님이에요."));
+        }
+        Map<String, UserSummary> users = userService.summaries(candidates.stream().map(ComplaintRecipientService.Candidate::teacherId).toList());
+        String pick = candidates.stream().filter(ComplaintRecipientService.Candidate::homeroom)
+                .map(ComplaintRecipientService.Candidate::teacherId).findFirst()
+                .orElse(candidates.isEmpty() ? null : candidates.get(0).teacherId());
+        return candidates.stream()
+                .map(x -> new ComplaintRecipientResponse(users.get(x.teacherId()), x.label(), x.teacherId().equals(pick),
+                        x.teacherId().equals(pick) ? (x.homeroom() ? "담임 선생님이 먼저 상황을 확인해요." : "이 반을 맡은 선생님이에요.") : null))
+                .toList();
     }
 
     // =====================================================================
@@ -590,7 +652,7 @@ public class ComplaintService {
                 .orElseThrow(() -> ApiException.notFound("민원을 찾을 수 없습니다."));
         boolean visible = switch (viewer.role()) {
             case PARENT -> c.getParentId().equals(viewer.id());
-            case TEACHER -> c.getTeacherId().equals(viewer.id()) && !c.getStatus().isPreSubmit();
+            case TEACHER -> viewer.id().equals(c.getTeacherId()) && !c.getStatus().isPreSubmit();
             case RESPONSE_TEAM, ADMIN -> escalationRepository.findByComplaintId(c.getId()).isPresent();
             default -> false;
         };
@@ -639,7 +701,7 @@ public class ComplaintService {
 
         Set<String> targets = new LinkedHashSet<>();
         targets.add(c.getParentId());
-        if (!to.isPreSubmit()) {
+        if (!to.isPreSubmit() && c.getTeacherId() != null) {
             targets.add(c.getTeacherId());
         }
         if (to == ComplaintStatus.ESCALATED || c.getEscalatedAt() != null) {
@@ -664,7 +726,8 @@ public class ComplaintService {
     }
 
     private ChatRoom roomOf(Complaint c) {
-        return roomRepository.findById(c.getRoomId()).orElseThrow(() -> ApiException.notFound("채팅방을 찾을 수 없습니다."));
+        return Optional.ofNullable(c.getRoomId()).flatMap(roomRepository::findById)
+                .orElseThrow(() -> ApiException.notFound("채팅방을 찾을 수 없습니다."));
     }
 
     /**

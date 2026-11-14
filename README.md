@@ -158,7 +158,7 @@ com.axedu
 | --- | --- |
 | 채팅 | `GET /chat/rooms` · `GET /chat/contacts` · `POST /chat/rooms` · `GET /chat/rooms/{id}` · `PATCH /chat/rooms/{id}/settings` · `DELETE /chat/rooms/{id}/members/me` · `GET·POST /chat/rooms/{id}/messages` · `POST /chat/rooms/{id}/read` · `GET·PUT /me/chat-settings` |
 | 파일 | `POST /files` (multipart `file`) · `GET /files/{id}/content?expires&sig` (서명 URL) |
-| 민원 | `POST /complaints` · `/explanation/retry` · `/close` · `POST /summary-card` · `/summary-card/revisions` · `PATCH /summary-card` · `/submit` · `GET /complaints` · `GET /complaints/{id}` · `/acknowledge` · `/reply-drafts` · `/reply` · `/escalations` · `/resolve` |
+| 민원 | `POST /complaints` (`roomId` 선택) · `/explanation/retry` · `/close` · `POST /summary-card` · `/summary-card/revisions` · `PATCH /summary-card` · `GET /complaints/{id}/recipients` (**추가**) · `/submit` (`teacherId`) · `GET /complaints` · `GET /complaints/{id}` · `/acknowledge` · `/reply-drafts` · `/reply` · `/escalations` · `/resolve` |
 | 사용자 | `GET /me` (**추가**) |
 | 규정 | `GET /regulations` (스텁, 빈 목록) |
 | WebSocket | `ws://{host}/ws/axedu/v1?token=` — ping/pong + `message.created` `message.read` `room.created` `room.updated` `room.unread_changed` `complaint.status_changed` `complaint.card_updated` `escalation.created` `escalation.updated` |
@@ -170,6 +170,14 @@ com.axedu
 - 교사에게는 `originalText`·`aiExplanation` 키 생략 + 제출된 카드 버전, 학부모 원문은 AES-256-GCM 암호화 저장
 - 422 `AI_PROCESSING_FAILED` 는 `details.complaintId`, 카드 버전 충돌은 409 + `details.latestVersion`, 검증 실패는 `details.fields`
 - 모든 시각은 `+09:00` ISO 8601, 이벤트는 커밋 후 전송
+
+### 학부모 민원 흐름 개편 (프론트 PR #4) 반영
+
+- 민원은 방·교사 없이 시작할 수 있습니다 (`POST /complaints` 의 `roomId` 생략 → 응답 `teacher`·`roomId` 가 `null`). `roomId` 를 주면 이전처럼 그 방의 선생님으로 고정됩니다.
+- `GET /complaints/{id}/recipients`: 학생의 이번 학년도 담임 + 교과 교사, `label` 예 "3학년 9반 담임 · 수학" / "3학년 영어". 추천(`recommended`)은 지금은 담임이고, AI 상담이 들어오면 상담에서 정한 선생님으로 바뀝니다.
+- `POST /complaints/{id}/submit` 의 `teacherId`: 후보가 아니거나 방의 선생님과 다르면 400 `details.fields.teacherId`. 학부모–선생님 DIRECT 방을 찾고 없으면 만든 뒤(`room.created`) 카드를 올립니다.
+- DB `V2__complaint_room_teacher_nullable.sql`: `complaints.room_id`·`teacher_id` NULL 허용 + 제출 이후 상태에서는 둘 다 필수(CHECK).
+- **아직 안 한 것 (AI 상담)**: `POST /complaints/{id}/consultations`, `consultStage`·`consultation`·`proposedTeacher` 응답 필드, 상담 테이블, `summary-card` 의 `READY` 전제, `explanation/retry` 의미 확장.
 
 ## 계약서에 없던 것 / 프론트 쪽 확인 필요
 

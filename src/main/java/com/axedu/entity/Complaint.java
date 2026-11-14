@@ -38,13 +38,15 @@ public class Complaint {
     @Column(name = "school_id", length = 32, nullable = false)
     private String schoolId;
 
-    @Column(name = "room_id", length = 32, nullable = false)
+    /** 학부모–교사 DIRECT 방. 방 밖에서 시작한 민원은 제출 전까지 NULL */
+    @Column(name = "room_id", length = 32)
     private String roomId;
 
     @Column(name = "parent_id", length = 32, nullable = false)
     private String parentId;
 
-    @Column(name = "teacher_id", length = 32, nullable = false)
+    /** 받는 교사. 방 밖에서 시작한 민원은 제출('확인하고 보내기') 때 학부모가 고른다 */
+    @Column(name = "teacher_id", length = 32)
     private String teacherId;
 
     @Column(name = "student_id", length = 32, nullable = false)

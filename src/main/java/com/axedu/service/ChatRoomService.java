@@ -113,30 +113,60 @@ public class ChatRoomService {
         if (counterpartId == null || counterpartId.isBlank()) {
             throw ApiException.validation("대화 상대를 골라 주세요.", "counterpartId", "required");
         }
-        String directKey = ChatRoom.directKeyOf(viewer.id(), counterpartId);
-        Optional<ChatRoom> existing = roomRepository.findByDirectKey(directKey);
+        Optional<ChatRoom> existing = roomRepository.findByDirectKey(ChatRoom.directKeyOf(viewer.id(), counterpartId));
         if (existing.isPresent()) {
-            ChatRoom room = existing.get();
-            // 나갔던 방이면 다시 참여시킨 뒤 그 방으로 안내
-            for (ChatRoomMember m : memberRepository.findByRoomId(room.getId())) {
-                if (!m.isActive()) {
-                    m.setLeftAt(null);
-                    m.setJoinedAt(TimeUtil.now());
-                    m.setUnreadCount(0);
-                    memberRepository.save(m);
-                }
-            }
-            throw new ApiException(ErrorCode.ROOM_ALREADY_EXISTS, "이미 대화 중인 상대입니다.", Map.of("roomId", room.getId()));
+            rejoinLeftMembers(existing.get());
+            throw new ApiException(ErrorCode.ROOM_ALREADY_EXISTS, "이미 대화 중인 상대입니다.", Map.of("roomId", existing.get().getId()));
         }
         if (!contactService.canContact(viewer, counterpartId)) {
             throw ApiException.forbidden("대화할 수 없는 상대입니다.");
         }
+        RoomContext ctx = createDirect(viewer, counterpartId);
+        return view(ctx, ctx.users().get(viewer.id()));
+    }
 
+    /**
+     * 두 사람의 DIRECT 방을 돌려준다. 없으면 만들고 상대에게 room.created, 나갔던 사람은 다시 참여시킨다.
+     * 민원 제출(받는 선생님과의 방에 카드 올리기)에서 쓴다. 상대가 대화 가능한지는 호출하는 쪽이 확인한다.
+     */
+    @Transactional
+    public ChatRoom ensureDirect(AuthUser viewer, String counterpartId) {
+        Optional<ChatRoom> existing = roomRepository.findByDirectKey(ChatRoom.directKeyOf(viewer.id(), counterpartId));
+        if (existing.isPresent()) {
+            ChatRoom room = existing.get();
+            List<String> rejoined = rejoinLeftMembers(room);
+            if (!rejoined.isEmpty()) {
+                RoomContext ctx = roomContextService.load(room);
+                for (String userId : rejoined) {
+                    publisher.publish(userId, RealtimeEvents.ROOM_CREATED, view(ctx, ctx.users().get(userId)));
+                }
+            }
+            return room;
+        }
+        return createDirect(viewer, counterpartId).room();
+    }
+
+    /** 나갔던 참여자를 다시 참여시키고 그 사용자 ID 목록을 돌려준다 */
+    private List<String> rejoinLeftMembers(ChatRoom room) {
+        List<String> rejoined = new ArrayList<>();
+        for (ChatRoomMember m : memberRepository.findByRoomId(room.getId())) {
+            if (!m.isActive()) {
+                m.setLeftAt(null);
+                m.setJoinedAt(TimeUtil.now());
+                m.setUnreadCount(0);
+                memberRepository.save(m);
+                rejoined.add(m.getUserId());
+            }
+        }
+        return rejoined;
+    }
+
+    private RoomContext createDirect(AuthUser viewer, String counterpartId) {
         ChatRoom room = new ChatRoom();
         room.setId(IdGenerator.newId(IdGenerator.ROOM));
         room.setSchoolId(viewer.schoolId());
         room.setType(RoomType.DIRECT);
-        room.setDirectKey(directKey);
+        room.setDirectKey(ChatRoom.directKeyOf(viewer.id(), counterpartId));
         room.setCreatedAt(TimeUtil.now());
         roomRepository.save(room);
         memberRepository.save(new ChatRoomMember(room.getId(), viewer.id()));
@@ -148,7 +178,7 @@ public class ChatRoomService {
 
         User counterpart = ctx.users().get(counterpartId);
         publisher.publish(counterpartId, RealtimeEvents.ROOM_CREATED, view(ctx, counterpart));
-        return view(ctx, ctx.users().get(viewer.id()));
+        return ctx;
     }
 
     // ---------------- 상세 ----------------

@@ -19,6 +19,7 @@ import com.axedu.common.response.PageMeta;
 import com.axedu.common.security.AuthUser;
 import com.axedu.common.security.CurrentUser;
 import com.axedu.config.WebConfig;
+import com.axedu.dto.complaint.ComplaintRecipientResponse;
 import com.axedu.dto.complaint.ComplaintResponse;
 import com.axedu.dto.complaint.CreateComplaintRequest;
 import com.axedu.dto.complaint.EditCardRequest;
@@ -67,6 +68,7 @@ public class ComplaintController {
     @Tag(name = TAG_PARENT, description = "학부모: 민원 작성 → AI 규정 설명 → 요약 카드 작성·수정 → 교사에게 보내기")
     @Operation(summary = "민원 작성 (학부모)",
             description = "민원 원문을 등록하고 AI 규정 설명을 받습니다. 성공하면 상태 `EXPLAINED`. "
+                    + "`roomId` 는 선택: 학부모 첫 화면에서 시작하면 비우고(`teacher`·`roomId` 가 null) 받는 선생님은 제출할 때 고릅니다. "
                     + "AI 실패 시 422 `AI_PROCESSING_FAILED` + `details.complaintId` → `/explanation/retry` 로 재시도. "
                     + "로컬 스텁은 원문에 `[AI실패]` 를 넣으면 첫 시도 실패를 재현합니다.")
     @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "201", description = "생성됨 (EXPLAINED)")
@@ -132,9 +134,23 @@ public class ComplaintController {
     }
 
     @Tag(name = TAG_PARENT)
+    @Operation(summary = "받을 수 있는 선생님 (학부모)",
+            description = "학생의 이번 학년도 담임 + 교과 교사. `recommended` 가 기본 선택(지금은 담임, AI 상담 도입 후 상담에서 정한 선생님). "
+                    + "방에서 시작해 교사가 고정된 민원은 그 한 명만 돌려줍니다.")
+    @GetMapping("/{id}/recipients")
+    public ApiResponse<List<ComplaintRecipientResponse>> recipients(@CurrentUser AuthUser user,
+                                                                    @Parameter(description = "민원 ID") @PathVariable String id) {
+        return ApiResponse.ok(complaintService.recipients(user, id));
+    }
+
+    @Tag(name = TAG_PARENT)
     @Operation(summary = "확인하고 보내기 (학부모)",
-            description = "확인한 카드 버전(`cardVersion`)으로 교사에게 보냅니다. `CARD_DRAFTING` → `SUBMITTED`. 이때부터 교사에게 보입니다.")
+            description = "확인한 카드 버전(`cardVersion`)을 고른 선생님(`teacherId`)에게 보냅니다. `CARD_DRAFTING` → `SUBMITTED`. "
+                    + "학부모–선생님 DIRECT 방을 찾고 없으면 만든 뒤(`room.created`) 카드 메시지를 올립니다. "
+                    + "`teacherId` 가 후보가 아니거나 방의 선생님과 다르면 400 `details.fields.teacherId`.")
     @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "200", description = "성공")
+    @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "400", description = "VALIDATION_ERROR — teacherId 누락·후보 아님",
+            content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
     @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "409", description = "INVALID_COMPLAINT_STATUS — 상태 불가 또는 카드 버전 충돌",
             content = @Content(schema = @Schema(ref = "#/components/schemas/ErrorResponse")))
     @PostMapping("/{id}/submit")

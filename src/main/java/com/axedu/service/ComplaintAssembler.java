@@ -1,5 +1,6 @@
 package com.axedu.service;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -56,7 +57,8 @@ public class ComplaintAssembler {
 
     public ComplaintResponse view(Complaint c, AuthUser viewer) {
         boolean teacher = viewer.role() == UserRole.TEACHER;
-        Map<String, UserSummary> users = userService.summaries(List.of(c.getParentId(), c.getTeacherId(), c.getStudentId()));
+        // 방 밖에서 시작해 아직 제출 전인 민원은 teacher·roomId 가 null
+        Map<String, UserSummary> users = userService.summaries(Arrays.asList(c.getParentId(), c.getTeacherId(), c.getStudentId()));
 
         SummaryCard card;
         if (teacher) {
@@ -73,7 +75,7 @@ public class ComplaintAssembler {
                 c.getId(),
                 c.getStatus(),
                 users.get(c.getParentId()),
-                users.get(c.getTeacherId()),
+                c.getTeacherId() == null ? null : users.get(c.getTeacherId()),
                 users.get(c.getStudentId()),
                 c.getRoomId(),
                 originalText,
