@@ -8,7 +8,8 @@ import java.util.List;
 
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
-import org.springframework.context.annotation.Profile;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -62,10 +63,12 @@ import com.axedu.service.ContactService;
 import lombok.RequiredArgsConstructor;
 
 /**
- * 로컬 데모 데이터 — 프론트 목 서버(src/api/mock/seed.ts)와 같은 사용자·방·메시지·민원.
- * 교사 usr_t1, 학부모 usr_p1·usr_p2, 대응팀 usr_rt1 로 /dev/token 을 받아 쓰면 된다.
+ * 데모 데이터 — 프론트 목 서버(src/api/mock/seed.ts)와 같은 사용자·방·메시지·민원. DB 가 비어 있을 때 한 번만 넣는다.
+ * local 프로필은 항상, 배포(prod)는 AXEDU_DEMO_ENABLED=true 일 때 켜진다 (axedu.demo.enabled).
+ * 로컬은 /dev/token, 배포 시연은 데모 계정 고정 토큰(DemoAccounts)으로 쓴다.
  */
-@Profile("local")
+@ConditionalOnProperty(prefix = "axedu.demo", name = "enabled", havingValue = "true")
+@Order(10)
 @Component
 @RequiredArgsConstructor
 public class LocalSeedData implements ApplicationRunner {

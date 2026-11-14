@@ -2,3 +2,7 @@
 logging:
   level:
     com.axedu: debug
+
+axedu:
+  demo:
+    enabled: true

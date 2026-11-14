@@ -57,3 +57,13 @@ tasks.withType(JavaCompile).configureEach {
 tasks.named('test') {
     useJUnitPlatform()
 }
+
+// 시연용 데모 계정 고정 토큰 출력: ./gradlew demoTokens  (AXEDU_JWT_SECRET 은 환경 변수 또는 .env)
+tasks.register('demoTokens', JavaExec) {
+    group = 'axedu'
+    description = '데모 계정(김수학 교사, 김리현·김민수 학부모) 고정 토큰을 출력한다'
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.axedu.config.DemoTokensMain'
+    workingDir = projectDir
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(21) }
+}

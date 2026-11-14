@@ -72,6 +72,10 @@ axedu:
   law-search:
     base-url: ${AXEDU_LAW_SEARCH_URL:http://127.0.0.1:8090}
     timeout-millis: 3000
+  # 시연용 데모 데이터·계정. local 프로필은 항상 켜짐(application-local.yml), 배포는 AXEDU_DEMO_ENABLED=true
+  demo:
+    enabled: ${AXEDU_DEMO_ENABLED:false}
+    token-expires-at: ${AXEDU_DEMO_TOKEN_EXPIRES_AT:2026-12-31T23:59:59+09:00}
   # OpenAI(ChatGPT) — 민원 키워드 추출. 키가 비어 있으면 규칙 기반 대체 구현으로 동작
   openai:
     api-key: ${OPENAI_API_KEY:}
